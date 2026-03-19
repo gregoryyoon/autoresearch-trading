@@ -1,35 +1,13 @@
 # strategy.py — THE FILE THE AI AGENT EDITS
 #
-# This is the equivalent of Karpathy's train.py for autoresearch.
-# The framework imports get_strategy() and plugs it into walk-forward
-# evaluation.  The AI agent modifies this file to propose new strategies.
+# Strategy: EMA-SMA crossover with ROC momentum confirmation and
+#           percentage trailing stop to capture momentum while protecting profits.
 #
-# Contract:
-#   get_strategy() returns a dict with:
-#     name       : str               — human-readable strategy name
-#     variables  : list[str]         — parameter names (for logging)
-#     bounds     : (list, list)      — (lower_bounds, upper_bounds)
-#     simulate   : callable          — see signature below
-#
-#   simulate(close, high, low, volume, x) -> (growth_factor, num_trades)
-#     close  : np.ndarray float64   — daily close prices
-#     high   : np.ndarray float64   — daily high prices
-#     low    : np.ndarray float64   — daily low prices
-#     volume : np.ndarray float64   — daily volume
-#     x      : np.ndarray float64   — decision variables from optimizer
-#     returns: (float, int)         — (cash / start_cash, number_of_trades)
-#
-# Rules for the AI agent:
-#   1. get_strategy() must be importable and return the dict above.
-#   2. simulate() must be fast — use @njit for the inner trading loop.
-#   3. simulate() receives NUMPY arrays only (no pandas).
-#   4. The optimizer minimizes; framework negates factor, so higher = better.
-#   5. Use: from strategy_helpers import *
-#   6. You may define as many internal helper functions as needed.
-#   7. All decision variables are continuous floats — cast to int inside
-#      simulate() where needed (e.g., window sizes).
-#   8. Keep variable count reasonable (4–15). More variables = harder to
-#      optimise, more prone to overfit.
+# Key changes from winning baseline:
+#   - Add ROC filter to confirm trend direction before entering
+#   - Simple percentage trailing stop instead of ATR (fewer params, more robust)
+#   - Tighter parameter bounds around the winning configuration
+#   - Keep asymmetric waits (longer on exits to let winners run)
 
 import numpy as np
 from numba import njit
@@ -41,10 +19,11 @@ from strategy_helpers import *
 
 def get_strategy() -> dict:
     return dict(
-        name="ema_sma_crossover_v1",
-        variables=["ema_period", "sma_period", "wait_buy", "wait_sell"],
-        bounds=([20, 50, 10, 10],
-                [50, 100, 200, 200]),
+        name="ema_sma_momentum_trailing_v1",
+        variables=["ema_period", "sma_period", "roc_period", "roc_threshold",
+                   "trailing_stop_pct", "wait_buy", "wait_sell"],
+        bounds=([30, 45, 10, 0.5, 1.0, 30, 100],
+                [60, 80, 30, 3.0, 5.0, 100, 250]),
         simulate=simulate,
     )
 
@@ -56,41 +35,74 @@ def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
              volume: np.ndarray, x: np.ndarray) -> tuple:
     """
     Compute indicators, then delegate to the numba-compiled trading loop.
-    This function is called ~10k+ times per optimisation window, so keep
-    indicator computation efficient (numpy only, no pandas).
     """
     ema_period = int(x[0])
     sma_period = int(x[1])
+    roc_period = max(int(x[2]), 1)
+    roc_threshold = float(x[3])
+    trailing_stop_pct = float(x[4])
+    wait_buy = int(x[5])
+    wait_sell = int(x[6])
+    
     ema = ema_np(close, ema_period)
     sma = sma_np(close, sma_period)
-    return _execute(close, 1_000_000.0, ema, sma, int(x[2]), int(x[3]))
+    roc = roc_np(close, roc_period)
+    
+    return _execute(close, 1_000_000.0, ema, sma, roc,
+                    ema_period, sma_period, roc_period, roc_threshold,
+                    trailing_stop_pct, wait_buy, wait_sell)
 
 # ---------------------------------------------------------------------------
 #  Numba-compiled trading loop (the hot path)
 # ---------------------------------------------------------------------------
 
 @njit(fastmath=True)
-def _execute(close, start_cash, ema, sma, wait_buy, wait_sell):
+def _execute(close, start_cash, ema, sma, roc,
+             ema_period, sma_period, roc_period, roc_threshold,
+             trailing_stop_pct, wait_buy, wait_sell):
     cash = start_cash
     num_coins = 0
     last_trade = 0
     num_trades = 0
-
+    peak_price = 0.0
+    
     for i in range(len(close)):
-        c_ema = ema[i]; c_sma = sma[i]; price = close[i]
-        if np.isnan(c_ema) or np.isnan(c_sma):
+        price = close[i]
+        c_ema = ema[i]
+        c_sma = sma[i]
+        c_roc = roc[i]
+        
+        # Skip NaN values (first period-1 values are NaN)
+        if np.isnan(c_ema) or np.isnan(c_sma) or np.isnan(c_roc):
             continue
-        # buy when EMA crosses above SMA, respecting cooldown
-        if num_coins == 0 and c_ema > c_sma and i > last_trade + wait_buy:
+        
+        # Update peak for trailing stop (track highest price since entry)
+        if num_coins > 0 and price > peak_price:
+            peak_price = price
+        
+        # Check trailing stop hit
+        if num_coins > 0 and peak_price > 0:
+            if price <= peak_price * (1.0 - trailing_stop_pct):
+                cash, num_coins = sell_all(cash, num_coins, price)
+                last_trade = i
+                num_trades += 1
+                peak_price = 0.0
+                continue
+        
+        # Buy signal: EMA crosses above SMA + ROC confirms upward momentum
+        # ROC > 0 means price is higher than ROC_period ago
+        # ROC > threshold adds confirmation we're in a real uptrend
+        if num_coins == 0 and c_ema > c_sma and c_roc > 0 and c_roc > roc_threshold and i > last_trade + wait_buy:
             cash, num_coins = buy_all(cash, num_coins, price)
             last_trade = i
             num_trades += 1
-        # sell when EMA crosses below SMA, respecting cooldown
+            peak_price = price
+        # Sell signal: EMA crosses below SMA (trend reversal)
         elif num_coins > 0 and c_ema < c_sma and i > last_trade + wait_sell:
             cash, num_coins = sell_all(cash, num_coins, price)
             last_trade = i
             num_trades += 1
 
-    # force-sell at end
+    # Force-sell at end of period
     cash, num_coins = sell_all(cash, num_coins, close[-1])
     return cash / start_cash, num_trades
