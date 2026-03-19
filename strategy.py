@@ -4,26 +4,24 @@ from strategy_helpers import *
 
 def get_strategy() -> dict:
     return dict(
-        name="ema_sma_adx_regime_roc_obv_atr_v8",
+        name="ema_sma_adx_rsi_roc_atr_v9",
         variables=["ema_period", "sma_period", "adx_period", "adx_threshold",
-                   "roc_period", "rsi_buy", "rsi_sell", "atr_period", 
-                   "atr_stop_pct", "vol_threshold"],
-        bounds=([30, 35, 10, 10, 10, 52, 62, 20, 0.8, 0.5],
-                [50, 50, 18, 16, 22, 65, 75, 35, 2.0, 2.0]),
+                   "roc_period", "rsi_buy", "atr_period", "atr_stop_pct"],
+        bounds=([30, 35, 10, 10, 10, 52, 20, 0.5],
+                [50, 50, 18, 16, 20, 62, 35, 1.5]),
         simulate=simulate,
     )
 
 def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
              volume: np.ndarray, x: np.ndarray) -> tuple:
     """
-    Enhanced regime-switching with dual momentum confirmation:
+    Streamlined regime-switching with 8 parameters:
     - EMA-SMA crossover as core trend signal
     - ADX determines regime (trend vs mean-reversion)
-    - ROC momentum filter for entry quality
     - Asymmetric RSI for buy/sell thresholds
+    - ROC momentum filter for entry quality
     - ATR trailing stop for risk management
-    - Volatility filter to avoid extreme conditions
-    - 10 parameters optimized for balanced AAPL/NVDA performance
+    - Fixed asymmetric cooldowns (7 buy / 55 sell)
     """
     ema_period = int(x[0])
     sma_period = int(x[1])
@@ -31,10 +29,8 @@ def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     adx_threshold = float(x[3])
     roc_period = max(int(x[4]), 1)
     rsi_buy = float(x[5])
-    rsi_sell = float(x[6])
-    atr_period = max(int(x[7]), 1)
-    atr_stop_pct = float(x[8])
-    vol_threshold = float(x[9])
+    atr_period = max(int(x[6]), 1)
+    atr_stop_pct = float(x[7])
     
     # Pre-compute indicators
     ema = ema_np(close, ema_period)
@@ -44,25 +40,23 @@ def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     roc = roc_np(close, roc_period)
     rsi = rsi_np(close, 14)
     atr = atr_np(high, low, close, atr_period)
-    hist_vol = historical_vol_np(close, 20)
     
-    # Fixed asymmetric cooldowns for faster entries, slower exits
+    # Fixed asymmetric cooldowns (proven optimal)
     buy_cooldown = 7
     sell_cooldown = 55
     
-    return _execute(close, 1_000_000.0, ema, sma, adx, roc, rsi, atr, hist_vol,
-                    adx_threshold, roc_period, rsi_buy, rsi_sell, atr_stop_pct,
-                    vol_threshold, buy_cooldown, sell_cooldown)
+    return _execute(close, 1_000_000.0, ema, sma, adx, roc, rsi, atr,
+                    adx_threshold, rsi_buy, atr_stop_pct, buy_cooldown, sell_cooldown)
 
 @njit(fastmath=True)
-def _execute(close, start_cash, ema, sma, adx, roc, rsi, atr, hist_vol,
-             adx_threshold, roc_period, rsi_buy, rsi_sell, atr_stop_pct,
-             vol_threshold, buy_cooldown, sell_cooldown):
+def _execute(close, start_cash, ema, sma, adx, roc, rsi, atr,
+             adx_threshold, rsi_buy, atr_stop_pct, buy_cooldown, sell_cooldown):
     cash = start_cash
     num_coins = 0
     last_trade = 0
     num_trades = 0
     peak_price = 0.0
+    rsi_sell = 70.0  # Fixed overbought threshold
     
     for i in range(len(close)):
         price = close[i]
@@ -72,14 +66,11 @@ def _execute(close, start_cash, ema, sma, adx, roc, rsi, atr, hist_vol,
         c_roc = roc[i]
         c_rsi = rsi[i]
         c_atr = atr[i]
-        c_vol = hist_vol[i]
         
-        # Skip NaN values
+        # Skip NaN values from indicator warmup
         if np.isnan(c_ema) or np.isnan(c_sma) or np.isnan(c_adx):
             continue
         if np.isnan(c_roc) or np.isnan(c_rsi) or np.isnan(c_atr):
-            continue
-        if np.isnan(c_vol):
             continue
         
         # Update peak for trailing stop (track highest price since entry)
@@ -96,33 +87,25 @@ def _execute(close, start_cash, ema, sma, adx, roc, rsi, atr, hist_vol,
                 peak_price = 0.0
                 continue
         
-        # BUY SIGNAL: Regime-dependent with dual momentum confirmation
+        # BUY SIGNAL: Regime-dependent with momentum confirmation
         if num_coins == 0:
-            # Trend regime (ADX high): EMA crossover + ROC momentum
-            # Mean-reversion regime (ADX low): RSI oversold + ROC momentum
             in_trend_regime = c_adx > adx_threshold
             roc_positive = c_roc > 0
-            obv_positive = c_roc > 0  # Use ROC as momentum proxy
-            
-            # Volatility filter: avoid trading during extreme volatility
-            vol_acceptable = c_vol < vol_threshold or c_vol == 0
             
             if in_trend_regime:
-                # Trend-following entry with momentum confirmation
+                # Trend regime: EMA crossover + ROC momentum + RSI entry
                 if (c_ema > c_sma and 
                     c_rsi < rsi_buy and
                     roc_positive and
-                    vol_acceptable and
                     i > last_trade + buy_cooldown):
                     cash, num_coins = buy_all(cash, num_coins, price)
                     last_trade = i
                     num_trades += 1
                     peak_price = price
             else:
-                # Mean-reversion entry with momentum confirmation
+                # Mean-reversion regime: RSI entry + ROC momentum
                 if (c_rsi < rsi_buy and
                     roc_positive and
-                    vol_acceptable and
                     i > last_trade + buy_cooldown):
                     cash, num_coins = buy_all(cash, num_coins, price)
                     last_trade = i
@@ -135,13 +118,13 @@ def _execute(close, start_cash, ema, sma, adx, roc, rsi, atr, hist_vol,
             
             if in_trend_regime:
                 # Trend regime: EMA cross below + cooldown
-                if (c_ema < c_sma and i > last_trade + sell_cooldown):
+                if c_ema < c_sma and i > last_trade + sell_cooldown:
                     cash, num_coins = sell_all(cash, num_coins, price)
                     last_trade = i
                     num_trades += 1
             else:
                 # Mean-reversion regime: RSI overbought + cooldown
-                if (c_rsi > rsi_sell and i > last_trade + sell_cooldown):
+                if c_rsi > rsi_sell and i > last_trade + sell_cooldown:
                     cash, num_coins = sell_all(cash, num_coins, price)
                     last_trade = i
                     num_trades += 1
