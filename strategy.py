@@ -4,21 +4,21 @@ from strategy_helpers import *
 
 def get_strategy() -> dict:
     return dict(
-        name="ema_sma_adx_rsi_roc_atr_v9",
+        name="ema_sma_adx_rsi_roc_atr_v10",
         variables=["ema_period", "sma_period", "adx_period", "adx_threshold",
-                   "roc_period", "rsi_buy", "atr_period", "atr_stop_pct"],
-        bounds=([30, 35, 10, 10, 10, 52, 20, 0.5],
-                [50, 50, 18, 16, 20, 62, 35, 1.5]),
+                   "roc_period", "rsi_buy", "rsi_sell", "atr_stop_pct"],
+        bounds=([30, 35, 10, 10, 10, 52, 68, 0.5],
+                [50, 50, 18, 16, 20, 62, 74, 1.2]),
         simulate=simulate,
     )
 
 def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
              volume: np.ndarray, x: np.ndarray) -> tuple:
     """
-    Streamlined regime-switching with 8 parameters:
+    Enhanced regime-switching with 8 parameters:
     - EMA-SMA crossover as core trend signal
     - ADX determines regime (trend vs mean-reversion)
-    - Asymmetric RSI for buy/sell thresholds
+    - Asymmetric RSI for buy/sell thresholds (NEW: tunable rsi_sell)
     - ROC momentum filter for entry quality
     - ATR trailing stop for risk management
     - Fixed asymmetric cooldowns (7 buy / 55 sell)
@@ -29,7 +29,7 @@ def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     adx_threshold = float(x[3])
     roc_period = max(int(x[4]), 1)
     rsi_buy = float(x[5])
-    atr_period = max(int(x[6]), 1)
+    rsi_sell = float(x[6])
     atr_stop_pct = float(x[7])
     
     # Pre-compute indicators
@@ -39,24 +39,23 @@ def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     adx = adx_data[0]
     roc = roc_np(close, roc_period)
     rsi = rsi_np(close, 14)
-    atr = atr_np(high, low, close, atr_period)
+    atr = atr_np(high, low, close, 27)  # Fixed ATR period for stability
     
     # Fixed asymmetric cooldowns (proven optimal)
     buy_cooldown = 7
     sell_cooldown = 55
     
     return _execute(close, 1_000_000.0, ema, sma, adx, roc, rsi, atr,
-                    adx_threshold, rsi_buy, atr_stop_pct, buy_cooldown, sell_cooldown)
+                    adx_threshold, rsi_buy, rsi_sell, atr_stop_pct, buy_cooldown, sell_cooldown)
 
 @njit(fastmath=True)
 def _execute(close, start_cash, ema, sma, adx, roc, rsi, atr,
-             adx_threshold, rsi_buy, atr_stop_pct, buy_cooldown, sell_cooldown):
+             adx_threshold, rsi_buy, rsi_sell, atr_stop_pct, buy_cooldown, sell_cooldown):
     cash = start_cash
     num_coins = 0
     last_trade = 0
     num_trades = 0
     peak_price = 0.0
-    rsi_sell = 70.0  # Fixed overbought threshold
     
     for i in range(len(close)):
         price = close[i]
