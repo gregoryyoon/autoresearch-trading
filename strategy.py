@@ -4,37 +4,36 @@ from strategy_helpers import *
 
 def get_strategy() -> dict:
     return dict(
-        name="ema_sma_adx_roc_rsi_atr_v4",
+        name="ema_sma_adx_roc_rsi_atr_v5",
         variables=["ema_period", "sma_period", "adx_period", "adx_threshold",
-                   "roc_period", "roc_threshold", "rsi_period", "rsi_upper",
-                   "atr_period", "atr_stop_pct", "buy_cooldown", "sell_cooldown"],
-        bounds=([35, 40, 12, 14, 18, 0.0, 10, 60, 25, 1.0, 8, 40],
-                [55, 55, 20, 18, 28, 2.0, 20, 75, 40, 3.5, 15, 60]),
+                   "roc_period", "rsi_period", "rsi_upper",
+                   "atr_period", "atr_stop_pct", "sell_cooldown"],
+        bounds=([30, 35, 10, 12, 15, 10, 55, 20, 1.0, 45],
+                [50, 50, 18, 16, 28, 20, 75, 35, 3.0, 65]),
         simulate=simulate,
     )
 
 def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
              volume: np.ndarray, x: np.ndarray) -> tuple:
     """
-    Enhanced trend-following with dual momentum confirmation:
+    Refined trend-following strategy:
     - EMA-SMA crossover as core entry/exit signal
-    - ADX trend filter to avoid whipsaws (especially on AAPL)
-    - ROC momentum + RSI quality filter for entry confirmation
-    - ATR-based percentage trailing stop for risk management
-    - Asymmetric cooldowns (shorter buy, longer sell)
+    - ADX trend filter (lower threshold for AAPL)
+    - ROC momentum + RSI quality for entry confirmation
+    - ATR trailing stop for risk management
+    - Longer sell cooldown to avoid whipsaws
+    - 10 parameters for better optimization stability
     """
     ema_period = int(x[0])
     sma_period = int(x[1])
     adx_period = max(int(x[2]), 1)
     adx_threshold = float(x[3])
     roc_period = max(int(x[4]), 1)
-    roc_threshold = float(x[5])
-    rsi_period = max(int(x[6]), 1)
-    rsi_upper = float(x[7])
-    atr_period = max(int(x[8]), 1)
-    atr_stop_pct = float(x[9])
-    buy_cooldown = int(x[10])
-    sell_cooldown = int(x[11])
+    rsi_period = max(int(x[5]), 1)
+    rsi_upper = float(x[6])
+    atr_period = max(int(x[7]), 1)
+    atr_stop_pct = float(x[8])
+    sell_cooldown = int(x[9])
     
     # Pre-compute indicators
     ema = ema_np(close, ema_period)
@@ -45,13 +44,16 @@ def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     rsi = rsi_np(close, rsi_period)
     atr = atr_np(high, low, close, atr_period)
     
+    # Fixed buy cooldown (shorter than sell for faster entries)
+    buy_cooldown = 8
+    
     return _execute(close, 1_000_000.0, ema, sma, adx, roc, rsi, atr,
-                    adx_threshold, roc_threshold, rsi_upper,
+                    adx_threshold, roc_period, rsi_upper,
                     atr_stop_pct, buy_cooldown, sell_cooldown)
 
 @njit(fastmath=True)
 def _execute(close, start_cash, ema, sma, adx, roc, rsi, atr,
-             adx_threshold, roc_threshold, rsi_upper,
+             adx_threshold, roc_period, rsi_upper,
              atr_stop_pct, buy_cooldown, sell_cooldown):
     cash = start_cash
     num_coins = 0
@@ -91,13 +93,13 @@ def _execute(close, start_cash, ema, sma, adx, roc, rsi, atr,
         # BUY SIGNAL: Multiple confirmations required
         if num_coins == 0:
             # 1. EMA > SMA (uptrend direction)
-            # 2. ADX > threshold (trend strength, filters whipsaws)
-            # 3. ROC > threshold (positive momentum)
-            # 4. RSI < upper bound (momentum not exhausted, helps AAPL)
+            # 2. ADX > threshold (trend strength)
+            # 3. ROC > 0 (positive momentum)
+            # 4. RSI < upper bound (not overbought)
             # 5. Buy cooldown period respected
             if (c_ema > c_sma and 
                 c_adx > adx_threshold and 
-                c_roc > roc_threshold and
+                c_roc > 0.0 and
                 c_rsi < rsi_upper and
                 i > last_trade + buy_cooldown):
                 cash, num_coins = buy_all(cash, num_coins, price)
