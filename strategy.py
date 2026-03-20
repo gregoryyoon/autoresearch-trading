@@ -1,145 +1,96 @@
+# strategy.py — THE FILE THE AI AGENT EDITS
+#
+# This is the equivalent of Karpathy's train.py for autoresearch.
+# The framework imports get_strategy() and plugs it into walk-forward
+# evaluation.  The AI agent modifies this file to propose new strategies.
+#
+# Contract:
+#   get_strategy() returns a dict with:
+#     name       : str               — human-readable strategy name
+#     variables  : list[str]         — parameter names (for logging)
+#     bounds     : (list, list)      — (lower_bounds, upper_bounds)
+#     simulate   : callable          — see signature below
+#
+#   simulate(close, high, low, volume, x) -> (growth_factor, num_trades)
+#     close  : np.ndarray float64   — daily close prices
+#     high   : np.ndarray float64   — daily high prices
+#     low    : np.ndarray float64   — daily low prices
+#     volume : np.ndarray float64   — daily volume
+#     x      : np.ndarray float64   — decision variables from optimizer
+#     returns: (float, int)         — (cash / start_cash, number_of_trades)
+#
+# Rules for the AI agent:
+#   1. get_strategy() must be importable and return the dict above.
+#   2. simulate() must be fast — use @njit for the inner trading loop.
+#   3. simulate() receives NUMPY arrays only (no pandas).
+#   4. The optimizer minimizes; framework negates factor, so higher = better.
+#   5. Use: from strategy_helpers import *
+#   6. You may define as many internal helper functions as needed.
+#   7. All decision variables are continuous floats — cast to int inside
+#      simulate() where needed (e.g., window sizes).
+#   8. Keep variable count reasonable (4–15). More variables = harder to
+#      optimise, more prone to overfit.
+
 import numpy as np
 from numba import njit
 from strategy_helpers import *
 
+# ---------------------------------------------------------------------------
+#  Strategy definition
+# ---------------------------------------------------------------------------
+
 def get_strategy() -> dict:
     return dict(
-        name="ema_sma_adx_rsi_roc_atr_v11",
-        variables=["ema_period", "sma_period", "adx_period", "adx_threshold",
-                   "roc_period", "rsi_buy", "rsi_sell", "atr_period", "atr_stop_pct"],
-        bounds=([30, 35, 10, 10, 10, 52, 68, 20, 0.5],
-                [50, 50, 18, 16, 20, 62, 74, 35, 1.3]),
+        name="ema_sma_crossover_v1",
+        variables=["ema_period", "sma_period", "wait_buy", "wait_sell"],
+        bounds=([20, 50, 10, 10],
+                [50, 100, 200, 200]),
         simulate=simulate,
     )
+
+# ---------------------------------------------------------------------------
+#  Simulation entry point (regular Python — bridges numpy prep and numba)
+# ---------------------------------------------------------------------------
 
 def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
              volume: np.ndarray, x: np.ndarray) -> tuple:
     """
-    Enhanced regime-switching with 9 parameters:
-    - EMA-SMA crossover as core trend signal
-    - ADX determines regime (trend vs mean-reversion)
-    - Asymmetric RSI for buy/sell thresholds
-    - ROC momentum filter for entry quality
-    - Tunable ATR period for trailing stop
-    - Dual exit: ATR stop + RSI overbought backup
-    - Fixed asymmetric cooldowns (7 buy / 55 sell)
+    Compute indicators, then delegate to the numba-compiled trading loop.
+    This function is called ~10k+ times per optimisation window, so keep
+    indicator computation efficient (numpy only, no pandas).
     """
     ema_period = int(x[0])
     sma_period = int(x[1])
-    adx_period = max(int(x[2]), 1)
-    adx_threshold = float(x[3])
-    roc_period = max(int(x[4]), 1)
-    rsi_buy = float(x[5])
-    rsi_sell = float(x[6])
-    atr_period = max(int(x[7]), 1)
-    atr_stop_pct = float(x[8])
-    
-    # Pre-compute indicators
     ema = ema_np(close, ema_period)
     sma = sma_np(close, sma_period)
-    adx_data = adx_np(high, low, close, adx_period)
-    adx = adx_data[0]
-    roc = roc_np(close, roc_period)
-    rsi = rsi_np(close, 14)
-    atr = atr_np(high, low, close, atr_period)
-    
-    # Fixed asymmetric cooldowns (proven optimal)
-    buy_cooldown = 7
-    sell_cooldown = 55
-    
-    return _execute(close, 1_000_000.0, ema, sma, adx, roc, rsi, atr,
-                    adx_threshold, rsi_buy, rsi_sell, atr_stop_pct, 
-                    buy_cooldown, sell_cooldown)
+    return _execute(close, 1_000_000.0, ema, sma, int(x[2]), int(x[3]))
+
+# ---------------------------------------------------------------------------
+#  Numba-compiled trading loop (the hot path)
+# ---------------------------------------------------------------------------
 
 @njit(fastmath=True)
-def _execute(close, start_cash, ema, sma, adx, roc, rsi, atr,
-             adx_threshold, rsi_buy, rsi_sell, atr_stop_pct, 
-             buy_cooldown, sell_cooldown):
+def _execute(close, start_cash, ema, sma, wait_buy, wait_sell):
     cash = start_cash
     num_coins = 0
     last_trade = 0
     num_trades = 0
-    peak_price = 0.0
-    
+
     for i in range(len(close)):
-        price = close[i]
-        c_ema = ema[i]
-        c_sma = sma[i]
-        c_adx = adx[i]
-        c_roc = roc[i]
-        c_rsi = rsi[i]
-        c_atr = atr[i]
-        
-        # Skip NaN values from indicator warmup
-        if np.isnan(c_ema) or np.isnan(c_sma) or np.isnan(c_adx):
+        c_ema = ema[i]; c_sma = sma[i]; price = close[i]
+        if np.isnan(c_ema) or np.isnan(c_sma):
             continue
-        if np.isnan(c_roc) or np.isnan(c_rsi) or np.isnan(c_atr):
-            continue
-        
-        # Update peak for trailing stop (track highest price since entry)
-        if num_coins > 0 and price > peak_price:
-            peak_price = price
-        
-        # DUAL EXIT: ATR trailing stop + RSI overbought backup
-        if num_coins > 0:
-            # Exit 1: ATR trailing stop
-            if peak_price > 0:
-                stop_price = peak_price * (1.0 - atr_stop_pct)
-                if price <= stop_price:
-                    cash, num_coins = sell_all(cash, num_coins, price)
-                    last_trade = i
-                    num_trades += 1
-                    peak_price = 0.0
-                    continue
-            
-            # Exit 2: RSI overbought (only in mean-reversion regime)
-            in_trend_regime = c_adx > adx_threshold
-            if not in_trend_regime and c_rsi > rsi_sell and i > last_trade + sell_cooldown:
-                cash, num_coins = sell_all(cash, num_coins, price)
-                last_trade = i
-                num_trades += 1
-                peak_price = 0.0
-                continue
-        
-        # BUY SIGNAL: Regime-dependent with momentum confirmation
-        if num_coins == 0:
-            in_trend_regime = c_adx > adx_threshold
-            roc_positive = c_roc > 0
-            
-            if in_trend_regime:
-                # Trend regime: EMA crossover + ROC momentum + RSI entry
-                if (c_ema > c_sma and 
-                    c_rsi < rsi_buy and
-                    roc_positive and
-                    i > last_trade + buy_cooldown):
-                    cash, num_coins = buy_all(cash, num_coins, price)
-                    last_trade = i
-                    num_trades += 1
-                    peak_price = price
-            else:
-                # Mean-reversion regime: RSI entry + ROC momentum
-                if (c_rsi < rsi_buy and
-                    roc_positive and
-                    i > last_trade + buy_cooldown):
-                    cash, num_coins = buy_all(cash, num_coins, price)
-                    last_trade = i
-                    num_trades += 1
-                    peak_price = price
-        
-        # SELL SIGNAL: Trend reversal with cooldown
-        elif num_coins > 0:
-            in_trend_regime = c_adx > adx_threshold
-            
-            if in_trend_regime:
-                # Trend regime: EMA cross below + cooldown
-                if c_ema < c_sma and i > last_trade + sell_cooldown:
-                    cash, num_coins = sell_all(cash, num_coins, price)
-                    last_trade = i
-                    num_trades += 1
-            else:
-                # Mean-reversion regime: RSI overbought + cooldown (already handled above)
-                pass
-    
-    # Force-sell at end of period
+        # buy when EMA crosses above SMA, respecting cooldown
+        if num_coins == 0 and c_ema > c_sma and i > last_trade + wait_buy:
+            cash, num_coins = buy_all(cash, num_coins, price)
+            last_trade = i
+            num_trades += 1
+        # sell when EMA crosses below SMA, respecting cooldown
+        elif num_coins > 0 and c_ema < c_sma and i > last_trade + wait_sell:
+            cash, num_coins = sell_all(cash, num_coins, price)
+            last_trade = i
+            num_trades += 1
+
+    # force-sell at end
     cash, num_coins = sell_all(cash, num_coins, close[-1])
     return cash / start_cash, num_trades
