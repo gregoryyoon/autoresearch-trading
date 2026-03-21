@@ -866,6 +866,41 @@ def historical_vol_np(close, period):
     return out
 
 @njit(fastmath=True)
+def realized_volatility_np(close, period, bars_per_year):
+    """Annualised realized volatility with caller-supplied bars/year."""
+    n = len(close)
+    if period <= 0 or period >= n or bars_per_year <= 0:
+        return np.full(n, np.nan)
+    lr = log_return_np(close); std = rolling_std_np(lr, period)
+    scale = np.sqrt(bars_per_year)
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = np.nan if np.isnan(std[i]) else std[i] * scale
+    return out
+
+@njit(fastmath=True)
+def choppiness_index_np(high, low, close, period):
+    """
+    Choppiness Index. Higher = ranging/choppy, lower = directional/trending.
+    """
+    n = len(close)
+    if period <= 1 or period >= n:
+        return np.full(n, np.nan)
+    tr = true_range_np(high, low, close)
+    tr_sum = rolling_sum_np(tr, period)
+    hh = rolling_max_np(high, period)
+    ll = rolling_min_np(low, period)
+    out = np.empty(n, dtype=np.float64)
+    denom = np.log10(period)
+    for i in range(n):
+        rng = hh[i] - ll[i] if (not np.isnan(hh[i]) and not np.isnan(ll[i])) else np.nan
+        if np.isnan(tr_sum[i]) or np.isnan(rng) or rng <= 0 or denom == 0.0 or tr_sum[i] <= 0:
+            out[i] = np.nan
+        else:
+            out[i] = 100.0 * np.log10(tr_sum[i] / rng) / denom
+    return out
+
+@njit(fastmath=True)
 def chaikin_vol_np(high, low, ema_period, roc_period):
     """Chaikin Volatility — ROC of EMA(high-low)."""
     n = len(high)
@@ -957,6 +992,34 @@ def vwap_np(high, low, close, volume):
         tp = (high[i]+low[i]+close[i])/3.0
         ctv += tp*volume[i]; cv += volume[i]
         out[i] = close[i] if cv==0 else ctv/cv
+    return out
+
+@njit(fastmath=True)
+def rolling_vwap_np(high, low, close, volume, period):
+    """Rolling-window VWAP."""
+    n = len(close)
+    if period <= 0 or period >= n:
+        return np.full(n, np.nan)
+    out = np.empty(n, dtype=np.float64)
+    for i in range(period - 1):
+        out[i] = np.nan
+    for i in range(period - 1, n):
+        ctv = 0.0; cv = 0.0
+        for j in range(period):
+            idx = i - j
+            tp = (high[idx] + low[idx] + close[idx]) / 3.0
+            ctv += tp * volume[idx]
+            cv += volume[idx]
+        out[i] = close[i] if cv == 0 else ctv / cv
+    return out
+
+@njit(fastmath=True)
+def vwap_deviation_np(high, low, close, volume, period):
+    """Percentage deviation of close from rolling VWAP."""
+    rvwap = rolling_vwap_np(high, low, close, volume, period)
+    n = len(close); out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = np.nan if (np.isnan(rvwap[i]) or rvwap[i] == 0) else close[i] / rvwap[i] - 1.0
     return out
 
 @njit(fastmath=True)
@@ -1378,6 +1441,24 @@ def trend_strength_np(close, period):
         out[i] = 0.0 if vol==0 else direction/vol
     return out
 
+@njit(fastmath=True)
+def distance_from_high_np(close, period):
+    """close / rolling_high - 1.0. Near 0 means close to breakout highs."""
+    hh = rolling_max_np(close, period)
+    n = len(close); out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = np.nan if (np.isnan(hh[i]) or hh[i] == 0) else close[i] / hh[i] - 1.0
+    return out
+
+@njit(fastmath=True)
+def distance_from_low_np(close, period):
+    """close / rolling_low - 1.0. Near 0 means close to local lows."""
+    ll = rolling_min_np(close, period)
+    n = len(close); out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        out[i] = np.nan if (np.isnan(ll[i]) or ll[i] == 0) else close[i] / ll[i] - 1.0
+    return out
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  9. WARMUP
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1414,10 +1495,12 @@ def warmup():
     bollinger_np(c, p, 2.0); bollinger_bandwidth_np(c, p, 2.0)
     bollinger_pctb_np(c, p, 2.0); atr_np(h, l, c, p); natr_np(h, l, c, p)
     keltner_np(h, l, c, p, p, 1.5); historical_vol_np(c, p)
+    realized_volatility_np(c, p, 365.0); choppiness_index_np(h, l, c, p)
     chaikin_vol_np(h, l, 3, p); ulcer_index_np(c, p)
     # 6. volume
     obv_np(c, v); cmf_np(h, l, c, v, p); force_index_np(c, v, p)
     ad_line_np(h, l, c, v); vwap_np(h, l, c, v)
+    rolling_vwap_np(h, l, c, v, p); vwap_deviation_np(h, l, c, v, p)
     volume_oscillator_np(v, 3, p); volume_ratio_np(v, p)
     # 7. channels
     donchian_np(h, l, p); pivot_points_np(h, l, c); ichimoku_np(h, l, c, 3, p, 2*p)
@@ -1436,3 +1519,4 @@ def warmup():
     above_np(c, 100.0); below_np(c, 100.0); between_np(c, 95.0, 105.0)
     ema_cross_signal_np(c, 3, p); decay_linear_np(c, p); decay_exp_np(c, 5.0)
     mean_reversion_score_np(c, p); trend_strength_np(c, p)
+    distance_from_high_np(c, p); distance_from_low_np(c, p)

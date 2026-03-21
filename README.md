@@ -140,7 +140,7 @@ agent.py                          ← agentic loop (LLM ↔ framework)
   │     ├── bootstrap_evaluate()  — stationary bootstrap confidence bands
   │     └── walk_forward_bootstrap() — combined validation
   │
-  ├── strategy_helpers.py         ← 93 @njit indicator functions (read-only)
+  ├── strategy_helpers.py         ← 99 @njit indicator functions (read-only)
   │     ├── Trading primitives    — buy_all, sell_all, buy/sell_fraction
   │     ├── Moving averages       — SMA, EMA, WMA, DEMA, TEMA, HMA, KAMA, ...
   │     ├── Momentum              — RSI, MACD, Stochastic, CCI, MFI, TSI, ...
@@ -185,7 +185,7 @@ position sizing, and tuning the parameter count.
 
 ### `strategy_helpers.py` — the indicator library
 
-93 numba-compiled (`@njit`) functions organised in 8 categories:
+99 numba-compiled (`@njit`) functions organised in 8 categories:
 
 | Category | Count | Examples |
 |---|---|---|
@@ -193,10 +193,10 @@ position sizing, and tuning the parameter count.
 | Moving averages | 10 | `ema_np`, `sma_np`, `wma_np`, `dema_np`, `tema_np`, `hma_np`, `kama_np`, `vwma_np`, `zlema_np`, `frama_np` |
 | Momentum / oscillators | 13 | `rsi_np`, `macd_np`, `stochastic_np`, `williams_r_np`, `cci_np`, `roc_np`, `mfi_np`, `tsi_np`, `stoch_rsi_np`, `cmo_np` |
 | Trend strength | 14 | `adx_np`, `aroon_np`, `supertrend_np`, `psar_np`, `trix_np`, `vortex_np`, `mass_index_np`, `linreg_slope_np`, `linreg_r2_np` |
-| Volatility | 9 | `bollinger_np`, `bollinger_bandwidth_np`, `atr_np`, `natr_np`, `keltner_np`, `historical_vol_np`, `ulcer_index_np` |
-| Volume | 7 | `obv_np`, `cmf_np`, `force_index_np`, `ad_line_np`, `vwap_np`, `volume_oscillator_np`, `volume_ratio_np` |
+| Volatility | 11 | `bollinger_np`, `bollinger_bandwidth_np`, `atr_np`, `natr_np`, `keltner_np`, `historical_vol_np`, `realized_volatility_np`, `choppiness_index_np`, `ulcer_index_np` |
+| Volume | 9 | `obv_np`, `cmf_np`, `force_index_np`, `ad_line_np`, `vwap_np`, `rolling_vwap_np`, `vwap_deviation_np`, `volume_oscillator_np`, `volume_ratio_np` |
 | Price channels | 3 | `donchian_np`, `pivot_points_np`, `ichimoku_np` |
-| Statistical / utility | 29 | `crossover_np`, `zscore_np`, `drawdown_np`, `normalize_np`, `bars_since_np`, `trend_strength_np`, `mean_reversion_score_np` |
+| Statistical / utility | 31 | `crossover_np`, `zscore_np`, `drawdown_np`, `normalize_np`, `bars_since_np`, `trend_strength_np`, `mean_reversion_score_np`, `distance_from_high_np`, `distance_from_low_np` |
 
 All functions operate on numpy float64 arrays and can be called both from regular
 Python (indicator preparation) and from inside `@njit` trading loops.
@@ -300,7 +300,7 @@ The agent's "skill file" — a compressed version of all the information the AI
 needs to design effective strategies.  It includes:
 
 - The strategy interface contract.
-- A compact catalog of all 93 available indicator functions.
+- A compact catalog of all 99 available indicator functions.
 - Numba constraints and common mistakes.
 - Strategy design heuristics (what works, what fails, how to interpret score
   components).
@@ -371,13 +371,12 @@ positioned for stronger coding and agentic work than their predecessors.
 ```bash
 llama-server \
   -hf unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL \
-  --jinja --reasoning-format none \
   --host 127.0.0.1 --port 8011 \
-  --ctx-size 50000 \
-  --temp 0.8 --top-p 0.95 --top-k 20 --min-p 0.0
+  --ctx-size 16384 \
+  --temp 0.7 --top-p 0.95 --top-k 20 --min-p 0.0
 ```
 
-The Q4 quantisation fits in 16GB VRAM with 50K context.  This is the minimum
+The Q4 quantisation fits in 16GB VRAM with 16K context.  This is the minimum
 recommended setup — smaller models (7B) produce too many crashes, and shorter
 contexts lose experiment history.
 
@@ -386,14 +385,13 @@ contexts lose experiment history.
 ```bash
 llama-server \
   -hf unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q6_K_XL \
-  --jinja --reasoning-format none \
   --host 127.0.0.1 --port 8011 \
-  --ctx-size 100000 \
-  --temp 0.8 --top-p 0.95 --top-k 20 --min-p 0.0
+  --ctx-size 50000 \
+  --temp 0.7 --top-p 0.95 --top-k 20 --min-p 0.0
 ```
 
 The Q6 quantisation is higher quality (fewer quantisation artifacts in generated
-code) and 100K context gives the agent deeper experiment history for better
+code) and 50K context gives the agent deeper experiment history for better
 decision-making.
 
 **Thinking alternative**
@@ -401,10 +399,9 @@ decision-making.
 ```bash
 llama-server \
   -hf Reasoning/Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-GGUF:Q8_0 \
-  --jinja --reasoning-format none \
   --host 127.0.0.1 --port 8011 \
-  --ctx-size 100000 \
-  --temp 0.8 --top-p 0.95 --top-k 20 --min-p 0.0
+  --ctx-size 50000 \
+  --temp 0.7 --top-p 0.95 --top-k 20 --min-p 0.0
 ```
 
 Slower but adds structured reasoning logic. 
@@ -417,10 +414,9 @@ M3 Ultra, etc.):
 # Qwen3.5-122B — significantly more capable strategy design
 llama-server \
   -hf unsloth/Qwen3.5-122B-A22B-GGUF:UD-Q4_K_XL \
-  --jinja --reasoning-format none \
   --host 127.0.0.1 --port 8011 \
   --ctx-size 100000 \
-  --temp 0.8 --top-p 0.95 --top-k 20 --min-p 0.0
+  --temp 0.7 --top-p 0.95 --top-k 20 --min-p 0.0
 ```
 
 The 122B model produces more creative strategies, makes fewer numba mistakes,
@@ -669,7 +665,7 @@ numba, it takes milliseconds.
 
 The constraint is that all code inside `@njit` functions must use numpy arrays and
 scalars — no pandas, no Python objects, no strings.  The `strategy_helpers.py`
-library provides 93 pre-compiled indicator functions that the AI agent can compose
+library provides 99 pre-compiled indicator functions that the AI agent can compose
 into strategies without worrying about numba compatibility.
 
 ### Why pre-compute indicators outside the trading loop?

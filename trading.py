@@ -22,7 +22,7 @@ np.set_printoptions(legacy='1.25')
 import time, sys
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import List as TList
+from typing import List as TList, Optional
 
 from fcmaes import retry
 from fcmaes.optimizer import Bite_cpp, dtime
@@ -32,14 +32,53 @@ import multiprocessing as mp
 from numba import njit
 
 from loguru import logger
+from strategy_helpers import hodl
 
 logger.remove()
 logger.add(sys.stdout, format="{time:HH:mm:ss.SS} | {process} | {level} | {message}", level="INFO")
 logger.add("log_{time}.txt", format="{time:HH:mm:ss.SS} | {process} | {level} | {message}", level="INFO")
 
+EQUITY_BARS_PER_YEAR = 252.0
+CRYPTO_BARS_PER_YEAR = 365.0
+
 # ---------------------------------------------------------------------------
 #  Strategy loading
 # ---------------------------------------------------------------------------
+
+def is_crypto_ticker(ticker: str) -> bool:
+    """Heuristic for common Yahoo Finance crypto symbols."""
+    t = (ticker or "").upper()
+    return (t.endswith("-USD") or t.endswith("-USDT") or t.endswith("-USDC")
+            or t.endswith("-BTC") or t.endswith("-ETH"))
+
+
+def resolve_market_mode(tickers: TList[str], requested_mode: str = "auto") -> str:
+    """Choose equity vs crypto behavior, with auto-detection by ticker set."""
+    if requested_mode != "auto":
+        return requested_mode
+    if tickers and all(is_crypto_ticker(t) for t in tickers):
+        return "crypto"
+    return "equity"
+
+
+def market_bars_per_year(market_mode: str) -> float:
+    """Annualization bars for the selected market type."""
+    return CRYPTO_BARS_PER_YEAR if market_mode == "crypto" else EQUITY_BARS_PER_YEAR
+
+
+def benchmark_name_for_mode(market_mode: str) -> str:
+    """Human-readable benchmark label, if any."""
+    return "HODL" if market_mode == "crypto" else ""
+
+
+def benchmark_factors_for_ohlcv(ohlcv_per_ticker: dict, market_mode: str) -> Optional[dict]:
+    """Per-ticker benchmark factors for one evaluation window."""
+    if market_mode != "crypto":
+        return None
+    benchmark = {}
+    for ticker, d in ohlcv_per_ticker.items():
+        benchmark[ticker] = max(float(hodl(d['close'], 1_000_000.0)), 1e-12)
+    return benchmark
 
 def load_strategy(module_name: str = "strategy") -> dict:
     """
@@ -175,7 +214,8 @@ def synthetic_ohlcv(close: np.ndarray) -> dict:
 class WindowFitness:
     """Evaluate a parameter vector on a fixed set of OHLCV windows."""
 
-    def __init__(self, ohlcv_per_ticker: dict, simulate_fn):
+    def __init__(self, ohlcv_per_ticker: dict, simulate_fn,
+                 benchmark_per_ticker: Optional[dict] = None):
         """
         ohlcv_per_ticker : {ticker: {close, high, low, volume}}
         simulate_fn      : the strategy's simulate(close, high, low, volume, x)
@@ -183,6 +223,8 @@ class WindowFitness:
         self.ohlcv = ohlcv_per_ticker
         self.tickers = list(ohlcv_per_ticker.keys())
         self.simulate_fn = simulate_fn
+        self.benchmark = benchmark_per_ticker or {}
+        self.use_benchmark = bool(benchmark_per_ticker)
         # shared counters for parallel optimisation
         self.evals = mp.RawValue(ct.c_int, 0)
         self.best_y = mp.RawValue(ct.c_double, np.inf)
@@ -197,15 +239,27 @@ class WindowFitness:
         for t in self.tickers:
             f, _ = self._simulate(t, x)
             factors.append(max(f, 1e-12))
-        geo_mean = np.prod(factors) ** (1.0 / len(factors))
+        objective_factors = factors
+        if self.use_benchmark:
+            objective_factors = [
+                max(f / self.benchmark[t], 1e-12)
+                for t, f in zip(self.tickers, factors)
+            ]
+        geo_mean = np.prod(objective_factors) ** (1.0 / len(objective_factors))
         y = -geo_mean
         self.evals.value += 1
         if y < self.best_y.value:
             self.best_y.value = y
-            logger.info("nsim={0}: t={1:.1f}s fac={2:.3f} {3} x={4}".format(
-                self.evals.value, dtime(self.t0), -y,
-                [round(f, 3) for f in factors],
-                [int(xi) for xi in x]))
+            if self.use_benchmark:
+                logger.info("nsim={0}: t={1:.1f}s alpha={2:.3f} raw={3} x={4}".format(
+                    self.evals.value, dtime(self.t0), -y,
+                    [round(f, 3) for f in factors],
+                    [int(xi) for xi in x]))
+            else:
+                logger.info("nsim={0}: t={1:.1f}s fac={2:.3f} {3} x={4}".format(
+                    self.evals.value, dtime(self.t0), -y,
+                    [round(f, 3) for f in factors],
+                    [int(xi) for xi in x]))
         return y
 
     def evaluate(self, x):
@@ -222,8 +276,9 @@ class WindowFitness:
 # ---------------------------------------------------------------------------
 
 def optimize_window(ohlcv_per_ticker, bounds, simulate_fn,
-                    num_retries=24, max_evals=500):
-    fit = WindowFitness(ohlcv_per_ticker, simulate_fn)
+                    num_retries=24, max_evals=500,
+                    benchmark_per_ticker: Optional[dict] = None):
+    fit = WindowFitness(ohlcv_per_ticker, simulate_fn, benchmark_per_ticker=benchmark_per_ticker)
     ret = retry.minimize(fit, bounds, num_retries=num_retries,
                          optimizer=Bite_cpp(max_evals))
     return ret.x, -ret.fun
@@ -249,16 +304,32 @@ def optimize_window(ohlcv_per_ticker, bounds, simulate_fn,
 #  appropriate for out-of-sample evaluation where overfit strategies
 #  tend to have fat-tailed losses.
 
-def compute_score(fold_factors: TList[float], risk_lambda: float = 0.5) -> dict:
+def compute_score(fold_factors: TList[float], risk_lambda: float = 0.5,
+                  benchmark_factors: Optional[TList[float]] = None) -> dict:
     """
     Compute the log-wealth Sharpe score from per-fold geometric-mean factors.
+
+    If *benchmark_factors* is provided, score the strategy on excess return
+    relative to that benchmark (e.g. HODL for crypto).
 
     Returns dict with keys: score, growth_rate, volatility, geo_mean,
     n_folds, frac_beat, worst_fold, best_fold.
     """
     f = np.array(fold_factors, dtype=np.float64)
     f = np.clip(f, 1e-12, None)
-    log_f = np.log(f)
+    basis = "absolute"
+    benchmark_geo = 1.0
+    if benchmark_factors is not None:
+        b = np.array(benchmark_factors, dtype=np.float64)
+        if len(b) != len(f):
+            raise ValueError("benchmark_factors length must match fold_factors")
+        b = np.clip(b, 1e-12, None)
+        scored = np.clip(f / b, 1e-12, None)
+        basis = "alpha"
+        benchmark_geo = float(np.exp(np.mean(np.log(b))))
+    else:
+        scored = f
+    log_f = np.log(scored)
     mean_r = float(np.mean(log_f))
     std_r  = float(np.std(log_f))
     score  = mean_r - risk_lambda * std_r
@@ -267,10 +338,13 @@ def compute_score(fold_factors: TList[float], risk_lambda: float = 0.5) -> dict:
         growth_rate=mean_r,
         volatility=std_r,
         geo_mean=float(np.exp(mean_r)),
+        raw_geo_mean=float(np.exp(np.mean(np.log(f)))),
+        benchmark_geo_mean=benchmark_geo,
+        basis=basis,
         n_folds=len(f),
-        frac_beat=float(np.mean(f > 1.0)),
-        worst_fold=float(np.min(f)),
-        best_fold=float(np.max(f)),
+        frac_beat=float(np.mean(scored > 1.0)),
+        worst_fold=float(np.min(scored)),
+        best_fold=float(np.max(scored)),
     )
 
 # ---------------------------------------------------------------------------
@@ -288,42 +362,79 @@ class WalkForwardFold:
     test_factors: TList[float] = field(default_factory=list)
     test_trades: TList[int] = field(default_factory=list)
     test_geo_mean: float = 0.0
+    benchmark_factors: TList[float] = field(default_factory=list)
+    benchmark_geo_mean: float = 0.0
 
 @dataclass
 class WalkForwardResult:
     folds: TList[WalkForwardFold] = field(default_factory=list)
+    market_mode: str = "equity"
+    benchmark_name: str = ""
+    bars_per_year: float = EQUITY_BARS_PER_YEAR
     oos_geo_mean: float = 0.0
     oos_factors_per_ticker: dict = field(default_factory=dict)
+    oos_benchmark_geo_mean: float = 0.0
+    oos_benchmark_per_ticker: dict = field(default_factory=dict)
+    oos_trades_per_ticker: dict = field(default_factory=dict)
 
     def score(self, risk_lambda: float = 0.5) -> dict:
         """Compute the single-objective score from all fold results."""
         fold_factors = [f.test_geo_mean for f in self.folds]
-        return compute_score(fold_factors, risk_lambda)
+        benchmark_factors = None
+        if self.market_mode == "crypto":
+            benchmark_factors = [f.benchmark_geo_mean for f in self.folds]
+        return compute_score(fold_factors, risk_lambda, benchmark_factors=benchmark_factors)
 
     def summary(self, risk_lambda: float = 0.5) -> str:
         s = self.score(risk_lambda)
         lines = []
-        lines.append(f"Walk-forward: {len(self.folds)} folds, "
-                      f"OOS geo_mean = {self.oos_geo_mean:.4f}")
+        headline = (f"Walk-forward: {len(self.folds)} folds, "
+                    f"OOS geo_mean = {self.oos_geo_mean:.4f}")
+        if self.market_mode == "crypto":
+            alpha_geo = (self.oos_geo_mean / self.oos_benchmark_geo_mean
+                         if self.oos_benchmark_geo_mean > 0 else 0.0)
+            headline += (f", {self.benchmark_name} geo_mean = {self.oos_benchmark_geo_mean:.4f}, "
+                         f"alpha_geo_mean = {alpha_geo:.4f}")
+        lines.append(headline)
         lines.append(f"  >>> SCORE = {s['score']:.4f}  "
                       f"(growth={s['growth_rate']:.4f}, "
                       f"vol={s['volatility']:.4f}, "
-                      f"lambda={risk_lambda})")
-        lines.append(f"  profitable in {s['frac_beat']*100:.0f}% of folds, "
+                      f"lambda={risk_lambda}, "
+                      f"basis={s['basis']})")
+        beat_label = "profitable"
+        if self.market_mode == "crypto":
+            beat_label = f"beat {self.benchmark_name}"
+        lines.append(f"  {beat_label} in {s['frac_beat']*100:.0f}% of folds, "
                       f"worst={s['worst_fold']:.3f}, "
                       f"best={s['best_fold']:.3f}")
+        total_trades = int(sum(sum(fold.test_trades) for fold in self.folds))
+        lines.append(f"  total OOS trades = {total_trades}")
         for i, fold in enumerate(self.folds):
-            lines.append(
+            line = (
                 f"  fold {i}: train [{fold.train_start}..{fold.train_end}] "
                 f"test [{fold.test_start}..{fold.test_end}] "
-                f"train_fac={fold.train_factor:.3f} "
+                f"train_obj={fold.train_factor:.3f} "
                 f"test_fac={fold.test_geo_mean:.3f} "
                 f"x={[int(xi) for xi in fold.best_x]} "
-                f"per_ticker={[round(f,3) for f in fold.test_factors]}")
+                f"per_ticker={[round(f,3) for f in fold.test_factors]} "
+                f"trades={fold.test_trades}"
+            )
+            if self.market_mode == "crypto" and fold.benchmark_geo_mean > 0:
+                alpha = fold.test_geo_mean / fold.benchmark_geo_mean
+                line += f"  {self.benchmark_name.lower()}_fac={fold.benchmark_geo_mean:.3f} alpha={alpha:.3f}"
+            lines.append(line)
         for t, fs in self.oos_factors_per_ticker.items():
-            lines.append(f"  {t}: OOS factors across folds = "
-                         f"{[round(f,3) for f in fs]}, "
-                         f"geo_mean = {np.prod(fs)**(1/len(fs)):.3f}")
+            line = (f"  {t}: OOS factors across folds = "
+                    f"{[round(f,3) for f in fs]}, "
+                    f"geo_mean = {np.prod(fs)**(1/len(fs)):.3f}, "
+                    f"total_trades = {int(self.oos_trades_per_ticker.get(t, 0))}")
+            if self.market_mode == "crypto":
+                bfs = self.oos_benchmark_per_ticker.get(t, [])
+                if bfs:
+                    alpha = np.prod(np.clip(np.array(fs) / np.array(bfs), 1e-12, None)) ** (1.0 / len(fs))
+                    line += (f", {self.benchmark_name.lower()}_geo_mean = {np.prod(bfs)**(1/len(bfs)):.3f}, "
+                             f"alpha_geo_mean = {alpha:.3f}")
+            lines.append(line)
         return '\n'.join(lines)
 
 
@@ -331,7 +442,8 @@ def walk_forward(tickers: TList[str], start: str, end: str,
                  strategy_spec: dict,
                  train_days: int = 365, test_days: int = 90,
                  step_days: int = 90,
-                 num_retries: int = 24, max_evals: int = 500) -> WalkForwardResult:
+                 num_retries: int = 24, max_evals: int = 500,
+                 market_mode: str = "auto") -> WalkForwardResult:
     """
     Rolling walk-forward optimisation.
 
@@ -342,6 +454,7 @@ def walk_forward(tickers: TList[str], start: str, end: str,
     lo, hi = strategy_spec["bounds"]
     bounds = Bounds(lo, hi)
     simulate_fn = strategy_spec["simulate"]
+    market_mode = resolve_market_mode(tickers, market_mode)
 
     histories = load_tickers(tickers, start, end)
     ref = histories[tickers[0]]
@@ -372,9 +485,11 @@ def walk_forward(tickers: TList[str], start: str, end: str,
                      f"test [{fold.test_start}..{fold.test_end}] ===")
 
         # optimise on training window
+        train_benchmark = benchmark_factors_for_ohlcv(train_ohlcv, market_mode)
         best_x, best_fac = optimize_window(
             train_ohlcv, bounds, simulate_fn,
-            num_retries=num_retries, max_evals=max_evals)
+            num_retries=num_retries, max_evals=max_evals,
+            benchmark_per_ticker=train_benchmark)
         fold.best_x = best_x
         fold.train_factor = best_fac
 
@@ -384,23 +499,49 @@ def walk_forward(tickers: TList[str], start: str, end: str,
         fold.test_factors = factors
         fold.test_trades = [int(nt) for nt in trades]
         fold.test_geo_mean = float(np.prod(factors) ** (1.0 / len(factors)))
+        test_benchmark = benchmark_factors_for_ohlcv(test_ohlcv, market_mode)
+        if test_benchmark:
+            fold.benchmark_factors = [test_benchmark[t] for t in tickers]
+            fold.benchmark_geo_mean = float(
+                np.prod(fold.benchmark_factors) ** (1.0 / len(fold.benchmark_factors)))
 
-        logger.info(f"  train_fac={fold.train_factor:.3f}  "
-                     f"test_fac={fold.test_geo_mean:.3f}  "
-                     f"per_ticker={[round(f,3) for f in factors]}  "
-                     f"x={[int(xi) for xi in best_x]}")
+        log_line = (f"  train_obj={fold.train_factor:.3f}  "
+                    f"test_fac={fold.test_geo_mean:.3f}  "
+                    f"per_ticker={[round(f,3) for f in factors]}  "
+                    f"trades={fold.test_trades}  "
+                    f"x={[int(xi) for xi in best_x]}")
+        if fold.benchmark_factors:
+            alpha = fold.test_geo_mean / fold.benchmark_geo_mean
+            log_line += (f"  {benchmark_name_for_mode(market_mode).lower()}_fac="
+                         f"{fold.benchmark_geo_mean:.3f} alpha={alpha:.3f}")
+        logger.info(log_line)
         folds.append(fold)
         i += step_days
 
     # aggregate out-of-sample results
-    result = WalkForwardResult(folds=folds)
+    result = WalkForwardResult(
+        folds=folds,
+        market_mode=market_mode,
+        benchmark_name=benchmark_name_for_mode(market_mode),
+        bars_per_year=market_bars_per_year(market_mode),
+    )
     all_test_factors = [f.test_geo_mean for f in folds]
     if all_test_factors:
         result.oos_geo_mean = float(
             np.prod(all_test_factors) ** (1.0 / len(all_test_factors)))
+    if market_mode == "crypto":
+        all_benchmark_factors = [f.benchmark_geo_mean for f in folds if f.benchmark_geo_mean > 0]
+        if all_benchmark_factors:
+            result.oos_benchmark_geo_mean = float(
+                np.prod(all_benchmark_factors) ** (1.0 / len(all_benchmark_factors)))
     for t in tickers:
         result.oos_factors_per_ticker[t] = [
             f.test_factors[tickers.index(t)] for f in folds]
+        result.oos_trades_per_ticker[t] = int(
+            sum(f.test_trades[tickers.index(t)] for f in folds))
+        if market_mode == "crypto":
+            result.oos_benchmark_per_ticker[t] = [
+                f.benchmark_factors[tickers.index(t)] for f in folds]
     return result
 
 # ---------------------------------------------------------------------------
@@ -443,7 +584,8 @@ def bootstrap_evaluate(tickers: TList[str], start: str, end: str,
                        avg_block_len: float = 20.0,
                        n_bootstrap: int = 50,
                        num_retries: int = 24, max_evals: int = 500,
-                       base_seed: int = 42) -> dict:
+                       base_seed: int = 42,
+                       market_mode: str = "auto") -> dict:
     """
     1. Optimise on the *real* data to get best_x.
     2. Generate n_bootstrap synthetic price paths per ticker.
@@ -453,14 +595,17 @@ def bootstrap_evaluate(tickers: TList[str], start: str, end: str,
     lo, hi = strategy_spec["bounds"]
     bounds = Bounds(lo, hi)
     simulate_fn = strategy_spec["simulate"]
+    market_mode = resolve_market_mode(tickers, market_mode)
 
     histories = load_tickers(tickers, start, end)
     real_ohlcv = {t: extract_ohlcv(histories[t]) for t in tickers}
+    real_benchmark = benchmark_factors_for_ohlcv(real_ohlcv, market_mode)
 
     logger.info("=== Bootstrap: optimising on real data ===")
     best_x, real_factor = optimize_window(
         real_ohlcv, bounds, simulate_fn,
-        num_retries=num_retries, max_evals=max_evals)
+        num_retries=num_retries, max_evals=max_evals,
+        benchmark_per_ticker=real_benchmark)
     real_fit = WindowFitness(real_ohlcv, simulate_fn)
     real_factors, _ = real_fit.evaluate(best_x)
     logger.info(f"  real factor = {real_factor:.4f}, per_ticker = "
@@ -513,7 +658,8 @@ def walk_forward_bootstrap(tickers: TList[str], start: str, end: str,
                            avg_block_len: float = 20.0,
                            n_bootstrap: int = 50,
                            num_retries: int = 24, max_evals: int = 500,
-                           base_seed: int = 42) -> dict:
+                           base_seed: int = 42,
+                           market_mode: str = "auto") -> dict:
     """
     Run walk-forward first, then for each fold additionally bootstrap the
     *training* window and re-optimise to measure parameter stability.
@@ -521,10 +667,12 @@ def walk_forward_bootstrap(tickers: TList[str], start: str, end: str,
     lo, hi = strategy_spec["bounds"]
     bounds = Bounds(lo, hi)
     simulate_fn = strategy_spec["simulate"]
+    market_mode = resolve_market_mode(tickers, market_mode)
 
     wf = walk_forward(tickers, start, end, strategy_spec,
                       train_days, test_days, step_days,
-                      num_retries, max_evals)
+                      num_retries, max_evals,
+                      market_mode=market_mode)
 
     histories = load_tickers(tickers, start, end)
     ref_dates = histories[tickers[0]].index
@@ -546,9 +694,11 @@ def walk_forward_bootstrap(tickers: TList[str], start: str, end: str,
         boot_xs = []
         for k in range(n_bootstrap):
             sample = {t: synthetic_ohlcv(boot_close[t][k]) for t in tickers}
+            sample_benchmark = benchmark_factors_for_ohlcv(sample, market_mode)
             bx, bf = optimize_window(sample, bounds, simulate_fn,
                                      num_retries=max(4, num_retries // 4),
-                                     max_evals=max_evals)
+                                     max_evals=max_evals,
+                                     benchmark_per_ticker=sample_benchmark)
             boot_factors[k] = bf
             boot_xs.append(bx)
 
@@ -600,6 +750,9 @@ if __name__ == '__main__':
                         help='Max evaluations per retry')
     parser.add_argument('--risk-lambda', type=float, default=0.5,
                         help='Risk penalty for score (0=pure growth, 0.5=Kelly, 1.0=strong)')
+    parser.add_argument('--market-mode', choices=['auto', 'equity', 'crypto'],
+                        default='auto',
+                        help='Market-specific behavior. crypto scores excess return vs HODL')
     args = parser.parse_args()
 
     # --- load strategy from the specified module ---
@@ -607,13 +760,19 @@ if __name__ == '__main__':
     lo, hi = spec["bounds"]
     bounds = Bounds(lo, hi)
     simulate_fn = spec["simulate"]
+    market_mode = resolve_market_mode(args.tickers, args.market_mode)
+    logger.info(f"Market mode: {market_mode}  "
+                f"(bars/year={market_bars_per_year(market_mode):.0f}, "
+                f"benchmark={benchmark_name_for_mode(market_mode) or 'none'})")
 
     if args.mode == 'simple':
         histories = load_tickers(args.tickers, args.start, args.end)
         ohlcv = {t: extract_ohlcv(histories[t]) for t in args.tickers}
+        benchmark = benchmark_factors_for_ohlcv(ohlcv, market_mode)
         best_x, best_fac = optimize_window(
             ohlcv, bounds, simulate_fn,
-            num_retries=args.num_retries, max_evals=args.max_evals)
+            num_retries=args.num_retries, max_evals=args.max_evals,
+            benchmark_per_ticker=benchmark)
         logger.info(f"Best factor = {best_fac:.4f}, "
                     f"vars = {dict(zip(spec['variables'], [round(xi,1) for xi in best_x]))}")
 
@@ -622,14 +781,16 @@ if __name__ == '__main__':
             args.tickers, args.start, args.end, spec,
             train_days=args.train_days, test_days=args.test_days,
             step_days=args.step_days,
-            num_retries=args.num_retries, max_evals=args.max_evals)
+            num_retries=args.num_retries, max_evals=args.max_evals,
+            market_mode=market_mode)
         logger.info('\n' + result.summary(risk_lambda=args.risk_lambda))
 
     elif args.mode == 'bootstrap':
         result = bootstrap_evaluate(
             args.tickers, args.start, args.end, spec,
             avg_block_len=args.avg_block_len, n_bootstrap=args.n_bootstrap,
-            num_retries=args.num_retries, max_evals=args.max_evals)
+            num_retries=args.num_retries, max_evals=args.max_evals,
+            market_mode=market_mode)
         logger.info(f"Bootstrap 90% CI: [{result['ci_5']:.4f}, {result['ci_95']:.4f}]")
 
     elif args.mode == 'combined':
@@ -638,7 +799,8 @@ if __name__ == '__main__':
             train_days=args.train_days, test_days=args.test_days,
             step_days=args.step_days,
             avg_block_len=args.avg_block_len, n_bootstrap=args.n_bootstrap,
-            num_retries=args.num_retries, max_evals=args.max_evals)
+            num_retries=args.num_retries, max_evals=args.max_evals,
+            market_mode=market_mode)
         wf = result['walk_forward']
         logger.info('\n' + wf.summary(risk_lambda=args.risk_lambda))
         for fb in result['fold_bootstrap']:

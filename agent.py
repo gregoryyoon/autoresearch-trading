@@ -57,6 +57,9 @@ RECENT_K = 10                # recent experiments shown to LLM
 TEMPERATURE = 0.7
 REFERENCE_CODE_CHARS = 3500  # keep discarded-code references compact for 50K context
 MAX_LLM_OUTPUT_TOKENS = 8192
+DEFAULT_TEST_DAYS = 90
+TRADING_DAYS_PER_YEAR = 252.0
+CRYPTO_DAYS_PER_YEAR = 365.0
 
 # Resolved at startup — the directory containing agent.py, strategy.py, trading.py
 PROJECT_DIR: Path = Path(__file__).resolve().parent
@@ -86,7 +89,7 @@ It decomposes into growth (average log-return) and volatility (consistency).
 ```python
 import numpy as np
 from numba import njit
-from strategy_helpers import *  # all 93 njit functions available
+from strategy_helpers import *  # all helper functions available
 
 def get_strategy() -> dict:
     return dict(
@@ -158,8 +161,9 @@ VOLATILITY: bollinger_np(close,period,nstd)→(mid,upper,lower),
   ulcer_index_np(close,period)
 VOLUME: obv_np(close,vol), cmf_np(high,low,close,vol,period),
   force_index_np(close,vol,period), ad_line_np(high,low,close,vol),
-  vwap_np(high,low,close,vol), volume_oscillator_np(vol,fast,slow),
-  volume_ratio_np(vol,period)
+  vwap_np(high,low,close,vol), rolling_vwap_np(high,low,close,vol,period),
+  vwap_deviation_np(high,low,close,vol,period),
+  volume_oscillator_np(vol,fast,slow), volume_ratio_np(vol,period)
 CHANNELS: donchian_np(high,low,period)→(up,lo,mid),
   pivot_points_np(high,low,close)→(p,r1,s1,r2,s2,r3,s3),
   ichimoku_np(high,low,close,tenkan,kijun,senkou_b)→(ts,ks,sa,sb,chikou)
@@ -174,12 +178,15 @@ UTILITY: log_return_np(close), pct_change_np(data,period),
   bars_since_np(condition), above_np(a,threshold), below_np(a,threshold),
   between_np(a,lo,hi), ema_cross_signal_np(close,fast,slow),
   decay_linear_np(data,period), decay_exp_np(data,halflife),
-  mean_reversion_score_np(close,period), trend_strength_np(close,period)
+  mean_reversion_score_np(close,period), trend_strength_np(close,period),
+  choppiness_index_np(high,low,close,period),
+  realized_volatility_np(close,period,bars_per_year),
+  distance_from_high_np(close,period), distance_from_low_np(close,period)
 
 ## Critical rules
 - ALWAYS use `from strategy_helpers import *` — never selective imports.
   This prevents "cannot import name" and "name not defined" errors.
-  All 93 functions become available everywhere, including inside @njit.
+  All helper functions become available everywhere, including inside @njit.
 - ALL variables used inside @njit _execute MUST be passed as parameters.
   Variables defined in simulate() are NOT visible inside _execute().
   WRONG: defining `rsi_period = int(x[2])` in simulate then using `rsi_period` in _execute
@@ -191,6 +198,9 @@ UTILITY: log_return_np(close), pct_change_np(data,period),
 - NEVER use print() inside simulate() or _execute() — it runs 10000+ times.
 - Always force-sell at the end of _execute.
 - 4–12 decision variables is ideal.  More = harder to optimise, overfitting risk.
+- Fix runtime errors at the root cause.  NEVER mask them with broad try/except,
+  NEVER return a constant `(1.0, 0)` fallback, and NEVER disable trading just
+  to avoid a crash.
 
 ## What works
 - Regime detection (ADX/trend_strength to switch trend vs mean-reversion)
@@ -198,6 +208,9 @@ UTILITY: log_return_np(close), pct_change_np(data,period),
 - Volatility filters (don't trade during extremes or trade after squeezes)
 - Trailing stops (ATR-based exits let winners run)
 - Asymmetric timing (different buy/sell cooldowns)
+- For crypto specifically: breakout/trend-continuation, wide ATR/NATR-based
+  exits, longer holding periods, and regime filters are often more robust than
+  stock-style short-horizon mean reversion.
 
 ## What fails
 - Too many indicators (8+ usually overfits)
@@ -270,6 +283,7 @@ class ExperimentResult:
     best_fold: float = 0.0
     median_params: str = ""        # "ema_fast=18, ema_slow=52, ..."
     per_ticker: str = ""           # "BTC:1.23, ETH:0.87, ..."
+    trade_counts: str = ""         # "BTC:23, ETH:18, ..."
     strategy_code: str = ""        # full strategy.py retained for prompt references
     family: str = ""               # coarse strategy family for diversity-aware prompts
 
@@ -278,6 +292,7 @@ class AgentState:
     best_score: float = -999.0
     best_commit: str = ""
     experiment_count: int = 0
+    bars_per_year: float = TRADING_DAYS_PER_YEAR
     history: list = field(default_factory=list)   # list of ExperimentResult
     current_strategy: str = ""                     # content of strategy.py (best)
     last_discarded_code: str = ""                  # kept for backward compatibility
@@ -285,7 +300,7 @@ class AgentState:
 
     def _format_experiment(self, r, label: str = "") -> str:
         """Format one experiment result for display."""
-        folds_per_year = 252.0 / 90
+        folds_per_year = self.bars_per_year / DEFAULT_TEST_DAYS
         ann = (math.exp(r.growth * folds_per_year) - 1) * 100
         sign = "+" if ann >= 0 else ""
         prefix = f"{label}: " if label else ""
@@ -298,6 +313,8 @@ class AgentState:
             line += f"\n    params: {r.median_params}"
         if r.per_ticker:
             line += f"\n    per-ticker: {r.per_ticker}"
+        if r.trade_counts:
+            line += f"\n    trades: {r.trade_counts}"
         return line
 
     def _non_crash_sorted(self) -> list:
@@ -745,11 +762,57 @@ def build_user_message(state: AgentState, top_k: int = TOP_K,
     return "\n\n".join(parts)
 
 
+def is_crypto_ticker(ticker: str) -> bool:
+    """Heuristic: common Yahoo crypto pairs end with quote-currency suffixes."""
+    t = (ticker or "").upper()
+    return (t.endswith("-USD") or t.endswith("-USDT") or t.endswith("-USDC")
+            or t.endswith("-BTC") or t.endswith("-ETH"))
+
+
+def resolve_market_mode(tickers: Optional[list[str]],
+                        requested_mode: str = "auto") -> str:
+    """Mirror trading.py market-mode behavior inside the agent."""
+    if requested_mode != "auto":
+        return requested_mode
+    if tickers and all(is_crypto_ticker(t) for t in tickers):
+        return "crypto"
+    return "equity"
+
+
+def infer_bars_per_year(market_mode: str) -> float:
+    """Use 365 for crypto-like 24/7 markets, otherwise 252 trading days."""
+    if market_mode == "crypto":
+        return CRYPTO_DAYS_PER_YEAR
+    return TRADING_DAYS_PER_YEAR
+
+
+def build_market_context(market_mode: str) -> str:
+    """Optional market-specific prompt guidance."""
+    if market_mode != "crypto":
+        return ""
+    return (
+        "Market context:\n"
+        "- The ticker set looks like crypto spot pairs trading 24/7.\n"
+        "- Crypto mode scores fold-by-fold excess return versus HODL, not raw return versus cash.\n"
+        "- Favor persistent trend/breakout/regime-aware logic over stock-style short-horizon mean reversion.\n"
+        "- Wider ATR/NATR stops, longer hold times, and de-risking after volatility spikes are often better fits.\n"
+        "- Yahoo crypto volume can be noisy; use volume as a secondary confirmation, not the entire edge.\n"
+        "- A flat/no-trade strategy is not a win. Fix crashes at the root cause instead of suppressing trades."
+    )
+
+
 def build_crash_message(error_text: str, attempt: int) -> str:
     """Build a message asking the LLM to fix a crash."""
+    extra = ("Fix the root cause.  Do NOT mask the error with broad try/except, "
+             "do NOT return a constant `(1.0, 0)`, and do NOT disable trading "
+             "just to avoid the crash.")
+    if "ZeroDivisionError" in error_text:
+        extra += (" For divide-by-zero issues, clamp denominators with a small "
+                  "epsilon or skip invalid bars instead.")
     return (f"CRASH (attempt {attempt})!  The strategy failed with this error:\n\n"
             f"```\n{error_text[-2000:]}\n```\n\n"
-            f"Fix the bug and output the corrected COMPLETE strategy.py.")
+            f"{extra}\n\n"
+            f"Output the corrected COMPLETE strategy.py.")
 
 
 def extract_strategy_code(response_text: str) -> Optional[str]:
@@ -854,6 +917,12 @@ def validate_contract(code: str) -> Optional[str]:
         return "Missing bounds in get_strategy"
     if "variables" not in code:
         return "Missing variables in get_strategy"
+    if re.search(r'^\s*return\s*\(?\s*1(?:\.0+)?\s*,\s*0\s*\)?\s*$', code, re.MULTILINE):
+        return "Constant flat fallback `return 1.0, 0` is not allowed"
+    if re.search(r'^\s*except\s+Exception\s*:', code, re.MULTILINE):
+        return "Broad `except Exception:` is not allowed in strategy.py"
+    if re.search(r'^\s*except\s+ZeroDivisionError\s*:', code, re.MULTILINE):
+        return "Do not mask ZeroDivisionError in strategy.py; fix the denominator"
     return None
 
 
@@ -1221,7 +1290,7 @@ def parse_results(output: str) -> dict:
     """Parse SCORE, growth, vol, and per-fold parameters from walk-forward output."""
     result = dict(success=False, score=0.0, growth=0.0, vol=0.0,
                   beat_pct=0.0, worst=0.0, best=0.0, error="",
-                  fold_xs=[])
+                  fold_xs=[], per_ticker_trades={})
 
     # Look for the SCORE line
     score_match = re.search(
@@ -1242,7 +1311,7 @@ def parse_results(output: str) -> dict:
     result["vol"] = float(score_match.group(3))
 
     # Parse additional stats
-    beat_match = re.search(r'profitable in (\d+)% of folds', output)
+    beat_match = re.search(r'(?:profitable|beat [^\n]+?) in (\d+)% of folds', output)
     if beat_match:
         result["beat_pct"] = float(beat_match.group(1))
 
@@ -1270,7 +1339,31 @@ def parse_results(output: str) -> dict:
         per_ticker[m.group(1)] = float(m.group(2))
     result["per_ticker"] = per_ticker
 
+    per_ticker_trades = {}
+    for m in re.finditer(r'(\S+):\s*OOS factors.*?total_trades\s*=\s*(\d+)', output):
+        per_ticker_trades[m.group(1)] = int(m.group(2))
+    result["per_ticker_trades"] = per_ticker_trades
+
     return result
+
+
+def is_flat_result(run_result: dict) -> bool:
+    """
+    Detect degenerate cash-preservation results.
+
+    We only see rounded values from the runner output, so the check is exact on
+    those rounded numbers: score/growth/vol must all be zero and every
+    per-ticker factor must print as 1.000.
+    """
+    if not run_result.get("success"):
+        return False
+    per_ticker_trades = run_result.get("per_ticker_trades") or {}
+    if per_ticker_trades and all(v == 0 for v in per_ticker_trades.values()):
+        return True
+    if run_result.get("score") != 0.0 or run_result.get("growth") != 0.0 or run_result.get("vol") != 0.0:
+        return False
+    per_ticker = run_result.get("per_ticker") or {}
+    return bool(per_ticker) and all(v == 1.0 for v in per_ticker.values())
 
 
 def format_optimal_params(meta: dict, fold_xs: list) -> str:
@@ -1290,20 +1383,32 @@ def format_optimal_params(meta: dict, fold_xs: list) -> str:
     return ", ".join(parts)
 
 
-def format_per_ticker(per_ticker: dict, test_days: int = 90) -> str:
+def format_per_ticker(per_ticker: dict, test_days: int = DEFAULT_TEST_DAYS,
+                      bars_per_year: float = TRADING_DAYS_PER_YEAR) -> str:
     """Format per-ticker geo_means with annualized returns.
     
     Example: 'AAPL:1.002(+0.6%/yr), MSFT:1.016(+4.5%/yr)'
     """
     if not per_ticker:
         return ""
-    folds_per_year = 252.0 / test_days  # ~2.8 for 90-day folds
+    folds_per_year = bars_per_year / test_days
     parts = []
     for t, v in per_ticker.items():
         ticker = t.replace('-USD', '').replace('-', '')
         ann_return = (v ** folds_per_year - 1) * 100
         sign = "+" if ann_return >= 0 else ""
         parts.append(f"{ticker}:{v:.3f}({sign}{ann_return:.1f}%/yr)")
+    return ", ".join(parts)
+
+
+def format_trade_counts(per_ticker_trades: dict) -> str:
+    """Format per-ticker total trade counts."""
+    if not per_ticker_trades:
+        return ""
+    parts = []
+    for t, n in per_ticker_trades.items():
+        ticker = t.replace('-USD', '').replace('-', '')
+        parts.append(f"{ticker}:{int(n)}")
     return ", ".join(parts)
 
 
@@ -1418,9 +1523,12 @@ def run_agent(args):
         git_setup_branch(args.tag)
     init_results_tsv()
 
-    state = AgentState()
+    market_mode = resolve_market_mode(args.tickers, args.market_mode)
+    bars_per_year = infer_bars_per_year(market_mode)
+    state = AgentState(bars_per_year=bars_per_year)
     state.current_strategy = read_strategy()
     conv = Conversation(SYSTEM_PROMPT)
+    market_context = build_market_context(market_mode)
 
     # Build extra args for trading.py
     extra_args_parts = []
@@ -1434,6 +1542,7 @@ def run_agent(args):
         extra_args_parts.append(f"--start {args.start}")
     if args.end:
         extra_args_parts.append(f"--end {args.end}")
+    extra_args_parts.append(f"--market-mode {market_mode}")
     extra_args = " ".join(extra_args_parts)
 
     print(f"Extra args: {extra_args or '(default)'}")
@@ -1469,7 +1578,8 @@ def run_agent(args):
         else:
             this_is_baseline = False
             # --- Step 1: Ask LLM for next strategy ---
-            user_msg = build_user_message(state, top_k=args.top_k, recent_k=args.recent_k)
+            user_msg = build_user_message(
+                state, top_k=args.top_k, recent_k=args.recent_k, extra=market_context)
             messages = conv.messages(user_msg)
 
             print("  Asking LLM for next strategy...")
@@ -1660,21 +1770,33 @@ def run_agent(args):
         vol = run_result["vol"]
 
         # Annualized return from per-fold growth
-        folds_per_year = 252.0 / 90  # default test_days=90
+        folds_per_year = bars_per_year / DEFAULT_TEST_DAYS
         ann_return = (math.exp(growth * folds_per_year) - 1) * 100
 
         # Compute display strings
         fold_xs = run_result.get("fold_xs", [])
         params_str = format_optimal_params(meta, fold_xs)
         per_ticker_dict = run_result.get("per_ticker", {})
-        per_ticker_str = format_per_ticker(per_ticker_dict)
+        per_ticker_trades = run_result.get("per_ticker_trades", {})
+        per_ticker_str = format_per_ticker(
+            per_ticker_dict, test_days=DEFAULT_TEST_DAYS, bars_per_year=bars_per_year)
+        trade_counts_str = format_trade_counts(per_ticker_trades)
+        flat_result = is_flat_result(run_result)
+        reject_flat = flat_result and not this_is_baseline
+        result_description = (description + " (flat/no-trade result rejected)"
+                              if reject_flat else description)
 
         if params_str:
             print(f"  Params (median): {params_str}")
         if per_ticker_str:
             print(f"  Per-ticker: {per_ticker_str}")
+        if trade_counts_str:
+            print(f"  Trades: {trade_counts_str}")
+        if reject_flat:
+            print("  [GUARDRAIL] Rejecting flat/no-trade result "
+                  "(score/growth/vol == 0 and every ticker == 1.000)")
 
-        improved = score > state.best_score
+        improved = (score > state.best_score) and not reject_flat
         prev_best = state.best_score
 
         sign = "+" if ann_return >= 0 else ""
@@ -1698,12 +1820,13 @@ def run_agent(args):
         result = ExperimentResult(
             experiment_id=exp_id, commit=commit,
             score=score, growth=growth, volatility=vol,
-            status=status, description=description,
+            status=status, description=result_description,
             beat_pct=run_result.get("beat_pct", 0),
             worst_fold=run_result.get("worst", 0),
             best_fold=run_result.get("best", 0),
             median_params=params_str,
             per_ticker=per_ticker_str,
+            trade_counts=trade_counts_str,
             strategy_code=code,
             family=infer_strategy_family(description, code))
         log_result(result)
@@ -1712,11 +1835,13 @@ def run_agent(args):
         # Record exchange for context
         result_parts = [
             f"Experiment #{exp_id} [{status}]: score={score:.4f} "
-            f"(growth={growth:.3f}, vol={vol:.3f}) — {description}"]
+            f"(growth={growth:.3f}, vol={vol:.3f}) — {result_description}"]
         if params_str:
             result_parts.append(f"  params: {params_str}")
         if per_ticker_str:
             result_parts.append(f"  per-ticker: {per_ticker_str}")
+        if trade_counts_str:
+            result_parts.append(f"  trades: {trade_counts_str}")
         conv.add_exchange(
             f"Tried: {description}",
             "\n".join(result_parts))
@@ -1747,6 +1872,9 @@ def main():
                         help="Override ticker symbols")
     parser.add_argument("--start", default=None, help="Data start date")
     parser.add_argument("--end", default=None, help="Data end date")
+    parser.add_argument("--market-mode", choices=["auto", "equity", "crypto"],
+                        default="auto",
+                        help="Market-specific behavior passed through to trading.py")
     parser.add_argument("--temperature", type=float, default=TEMPERATURE,
                         help="LLM temperature")
     parser.add_argument("--top-k", type=int, default=TOP_K,
