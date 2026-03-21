@@ -2,6 +2,8 @@
 
 # autoresearch-trading
 
+![Example agent progress over time and per cycle](img/progress.png)
+
 Autonomous AI-driven discovery of trading strategies, inspired by [Karpathy's autoresearch](https://github.com/karpathy/autoresearch).
 
 ## The Core Idea: Splitting the Brain
@@ -54,13 +56,6 @@ This project splits the problem at the right seam:
          
 This gives the AI a much cleaner signal than end-to-end autoresearch. 
 A bad score here definitively means the architecture change was bad, not just poorly tuned.
-
-A typical run looks like this:
-
-![Example agent progress over time and per cycle](img/progress.png)
-
-The diagram shows both views of the search: progress over wall-clock time and
-progress per experiment cycle.
 
 The core idea: **separate strategy structure from parameter tuning**.  An AI agent
 designs the trading logic — which indicators to use, when to buy and sell, how to
