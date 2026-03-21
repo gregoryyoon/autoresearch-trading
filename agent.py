@@ -187,14 +187,22 @@ UTILITY: log_return_np(close), pct_change_np(data,period),
 - ALWAYS use `from strategy_helpers import *` — never selective imports.
   This prevents "cannot import name" and "name not defined" errors.
   All helper functions become available everywhere, including inside @njit.
+- `simulate` must have the exact signature `simulate(close, high, low, volume, x)`.
+- `variables` must be a plain Python list of quoted parameter names, e.g.
+  `["ema_fast", "ema_slow", "adx_period"]`.  No stray quotes, no comments
+  inside the strings, no placeholders.
 - ALL variables used inside @njit _execute MUST be passed as parameters.
   Variables defined in simulate() are NOT visible inside _execute().
   WRONG: defining `rsi_period = int(x[2])` in simulate then using `rsi_period` in _execute
   RIGHT: pass it as a parameter: `_execute(close, cash, ema, rsi, int(x[2]), ...)`
+- Keep the `_execute(...)` call and the `_execute(...)` definition in the same
+  order with the same argument count.
 - Always use max(int(x[i]), 1) for period parameters (0 → division by zero).
 - Handle NaN: first period-1 values of any indicator are NaN.  Skip them.
 - Keep indicator periods < 200 (training window is 365 days).
 - All functions called inside @njit must be @njit (from strategy_helpers).
+- Inside @njit, `if` / `and` / `or` conditions must use scalars, not whole
+  arrays.  WRONG: `if adx > 25:`  RIGHT: `if adx[i] > 25:`
 - NEVER use print() inside simulate() or _execute() — it runs 10000+ times.
 - Always force-sell at the end of _execute.
 - 4–12 decision variables is ideal.  More = harder to optimise, overfitting risk.
@@ -218,9 +226,13 @@ UTILITY: log_return_np(close), pct_change_np(data,period),
 - Too many AND conditions — too few trades, coincidental fits
 
 ## Your output format
-Each response MUST contain exactly one fenced python code block with the
-COMPLETE strategy.py file.  Before it, explain your reasoning.  After it,
-give a one-line DESCRIPTION: tag.
+Each response MUST contain:
+1. Optional brief reasoning (1-4 short lines max).
+2. Exactly one fenced python code block with the COMPLETE strategy.py file.
+3. Exactly one final `DESCRIPTION: ...` line.
+
+Never output an empty response.  If you are unsure, output the current
+strategy with one small valid modification instead of placeholders.
 
 Correct pattern — note how ALL values are passed to _execute as parameters:
 
@@ -282,8 +294,10 @@ class ExperimentResult:
     worst_fold: float = 0.0
     best_fold: float = 0.0
     median_params: str = ""        # "ema_fast=18, ema_slow=52, ..."
-    per_ticker: str = ""           # "BTC:1.23, ETH:0.87, ..."
+    per_ticker: str = ""           # raw geo_mean display
+    per_ticker_alpha: str = ""     # alpha geo_mean display vs benchmark
     trade_counts: str = ""         # "BTC:23, ETH:18, ..."
+    benchmark_name: str = ""       # e.g. HODL in crypto mode
     strategy_code: str = ""        # full strategy.py retained for prompt references
     family: str = ""               # coarse strategy family for diversity-aware prompts
 
@@ -297,6 +311,8 @@ class AgentState:
     current_strategy: str = ""                     # content of strategy.py (best)
     last_discarded_code: str = ""                  # kept for backward compatibility
     best_per_ticker: str = ""                      # per-ticker breakdown of best
+    best_per_ticker_alpha: str = ""                # benchmark-relative per-ticker view
+    benchmark_name: str = ""                       # label for benchmark-relative stats
 
     def _format_experiment(self, r, label: str = "") -> str:
         """Format one experiment result for display."""
@@ -312,7 +328,10 @@ class AgentState:
         if r.median_params:
             line += f"\n    params: {r.median_params}"
         if r.per_ticker:
-            line += f"\n    per-ticker: {r.per_ticker}"
+            line += f"\n    per-ticker raw: {r.per_ticker}"
+        if r.per_ticker_alpha:
+            alpha_label = f" vs {r.benchmark_name}" if r.benchmark_name else ""
+            line += f"\n    per-ticker alpha{alpha_label}: {r.per_ticker_alpha}"
         if r.trade_counts:
             line += f"\n    trades: {r.trade_counts}"
         return line
@@ -436,7 +455,10 @@ class AgentState:
         lines = [f"Experiments run: {self.experiment_count}",
                  f"Best SCORE so far: {self.best_score:.4f}"]
         if self.best_per_ticker:
-            lines.append(f"Best per-ticker: {self.best_per_ticker}")
+            lines.append(f"Best per-ticker raw: {self.best_per_ticker}")
+        if self.best_per_ticker_alpha:
+            alpha_label = f" vs {self.benchmark_name}" if self.benchmark_name else ""
+            lines.append(f"Best per-ticker alpha{alpha_label}: {self.best_per_ticker_alpha}")
 
         if not self.history:
             return "\n".join(lines)
@@ -801,14 +823,52 @@ def build_market_context(market_mode: str) -> str:
     )
 
 
+def build_format_repair_message(issue: str) -> str:
+    """Ask the LLM to re-emit a valid strategy file after format drift."""
+    return (
+        f"FORMAT ERROR: your previous reply had {issue}.\n\n"
+        "Reply again with:\n"
+        "1. Exactly one fenced ```python``` code block containing the COMPLETE strategy.py file.\n"
+        "2. Exactly one final `DESCRIPTION: ...` line.\n\n"
+        "Do not omit `get_strategy`, `simulate`, or the njit trading loop. "
+        "Do not output placeholders or prose-only responses."
+    )
+
+
+def build_contract_message(error_text: str) -> str:
+    """Ask the LLM to fix a strategy interface/contract violation."""
+    return (
+        "CONTRACT ERROR!  The strategy file violated the required interface:\n\n"
+        f"```\n{error_text}\n```\n\n"
+        "Fix the contract and output the corrected COMPLETE strategy.py.\n"
+        "- `simulate` must be exactly `simulate(close, high, low, volume, x)`.\n"
+        "- `variables` must be a plain Python list of quoted names.\n"
+        "- `bounds` must contain two lists with the same length as `variables`.\n"
+        "- Keep `_execute(...)` call/definition argument count and order aligned."
+    )
+
+
 def build_crash_message(error_text: str, attempt: int) -> str:
     """Build a message asking the LLM to fix a crash."""
     extra = ("Fix the root cause.  Do NOT mask the error with broad try/except, "
              "do NOT return a constant `(1.0, 0)`, and do NOT disable trading "
              "just to avoid the crash.")
+    lower = error_text.lower()
     if "ZeroDivisionError" in error_text:
         extra += (" For divide-by-zero issues, clamp denominators with a small "
                   "epsilon or skip invalid bars instead.")
+    if any(tok in lower for tok in (
+        "typingerror", "cannot determine numba type", "no implementation of function",
+        "array(float", "array(int", "reflected list"
+    )):
+        extra += (" Inside @njit, branch conditions must use scalars, not whole arrays. "
+                  "Index indicator arrays with `[i]` before comparing or combining them.")
+    if any(tok in lower for tok in (
+        "positional argument", "takes ", "were given", "missing 1 required positional argument"
+    )):
+        extra += (" Match function signatures exactly: keep helper argument counts unchanged, "
+                  "keep `simulate(close, high, low, volume, x)` unchanged, and ensure the "
+                  "`_execute(...)` call and definition have the same order and count.")
     return (f"CRASH (attempt {attempt})!  The strategy failed with this error:\n\n"
             f"```\n{error_text[-2000:]}\n```\n\n"
             f"{extra}\n\n"
@@ -909,14 +969,43 @@ def validate_syntax(code: str) -> Optional[str]:
 
 def validate_contract(code: str) -> Optional[str]:
     """Check that the strategy defines get_strategy with correct structure."""
-    if "def get_strategy" not in code:
+    try:
+        tree = ast.parse(code)
+    except SyntaxError as e:
+        return f"SyntaxError: {e}"
+
+    fn_defs = {
+        node.name: node for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    if "get_strategy" not in fn_defs:
         return "Missing get_strategy() function"
-    if "def simulate" not in code:
+    if "simulate" not in fn_defs:
         return "Missing simulate() function"
-    if "bounds" not in code:
-        return "Missing bounds in get_strategy"
-    if "variables" not in code:
-        return "Missing variables in get_strategy"
+
+    simulate_fn = fn_defs["simulate"]
+    sim_args = [arg.arg for arg in simulate_fn.args.args]
+    if (simulate_fn.args.posonlyargs or simulate_fn.args.kwonlyargs or
+            simulate_fn.args.vararg or simulate_fn.args.kwarg or
+            sim_args != ["close", "high", "low", "volume", "x"]):
+        return "simulate() must have exact signature: simulate(close, high, low, volume, x)"
+
+    meta = extract_strategy_meta(code)
+    variables = meta.get("variables")
+    if not variables:
+        return "Missing or malformed variables in get_strategy"
+    if any(not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', v) for v in variables):
+        return "variables must be quoted identifier-like names only"
+    if len(set(variables)) != len(variables):
+        return "variables entries must be unique"
+
+    lo = meta.get("lo")
+    hi = meta.get("hi")
+    if lo is None or hi is None:
+        return "Missing or malformed bounds in get_strategy"
+    if len(lo) != len(hi) or len(lo) != len(variables):
+        return "bounds dimensions must match number of variables"
+
     if re.search(r'^\s*return\s*\(?\s*1(?:\.0+)?\s*,\s*0\s*\)?\s*$', code, re.MULTILINE):
         return "Constant flat fallback `return 1.0, 0` is not allowed"
     if re.search(r'^\s*except\s+Exception\s*:', code, re.MULTILINE):
@@ -932,14 +1021,68 @@ def extract_strategy_meta(code: str) -> dict:
     Returns {'variables': [...], 'lo': [...], 'hi': [...]} or empty dict.
     """
     meta = {}
-    # Extract variables list
+
+    try:
+        tree = ast.parse(code)
+    except SyntaxError:
+        tree = None
+
+    if tree is not None:
+        get_strategy_fn = next(
+            (node for node in tree.body
+             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+             and node.name == "get_strategy"),
+            None,
+        )
+        if get_strategy_fn is not None:
+            for node in ast.walk(get_strategy_fn):
+                if not isinstance(node, ast.Return) or node.value is None:
+                    continue
+
+                value_map = {}
+                if isinstance(node.value, ast.Dict):
+                    for key_node, value_node in zip(node.value.keys, node.value.values):
+                        if isinstance(key_node, ast.Constant) and isinstance(key_node.value, str):
+                            value_map[key_node.value] = value_node
+                elif (isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
+                      and node.value.func.id == "dict"):
+                    for kw in node.value.keywords:
+                        if kw.arg:
+                            value_map[kw.arg] = kw.value
+
+                variables_node = value_map.get("variables")
+                if variables_node is not None:
+                    try:
+                        raw_variables = ast.literal_eval(variables_node)
+                        if (isinstance(raw_variables, (list, tuple))
+                                and all(isinstance(v, str) for v in raw_variables)):
+                            meta["variables"] = list(raw_variables)
+                    except Exception:
+                        pass
+
+                bounds_node = value_map.get("bounds")
+                if bounds_node is not None:
+                    try:
+                        raw_bounds = ast.literal_eval(bounds_node)
+                        if isinstance(raw_bounds, (list, tuple)) and len(raw_bounds) == 2:
+                            lo, hi = raw_bounds
+                            if isinstance(lo, (list, tuple)) and isinstance(hi, (list, tuple)):
+                                meta["lo"] = [float(x) for x in lo]
+                                meta["hi"] = [float(x) for x in hi]
+                    except Exception:
+                        pass
+
+                if meta:
+                    return meta
+
+    # Regex fallback for partially malformed code.
     var_match = re.search(r'variables\s*=\s*\[([^\]]+)\]', code)
     if var_match:
         raw = var_match.group(1)
-        meta['variables'] = [s.strip().strip('"').strip("'")
-                             for s in raw.split(',')]
+        variables = [s.strip().strip('"').strip("'") for s in raw.split(',')]
+        if variables and all(variables):
+            meta['variables'] = variables
 
-    # Extract bounds — look for bounds=([...], [...])
     bounds_match = re.search(
         r'bounds\s*=\s*\(\s*\[([^\]]+)\]\s*,\s*\[([^\]]+)\]\s*\)', code)
     if bounds_match:
@@ -1290,7 +1433,8 @@ def parse_results(output: str) -> dict:
     """Parse SCORE, growth, vol, and per-fold parameters from walk-forward output."""
     result = dict(success=False, score=0.0, growth=0.0, vol=0.0,
                   beat_pct=0.0, worst=0.0, best=0.0, error="",
-                  fold_xs=[], per_ticker_trades={})
+                  fold_xs=[], per_ticker_trades={}, per_ticker_benchmark={},
+                  per_ticker_alpha={}, benchmark_name="")
 
     # Look for the SCORE line
     score_match = re.search(
@@ -1333,16 +1477,51 @@ def parse_results(output: str) -> dict:
             pass
     result["fold_xs"] = fold_xs
 
-    # Extract per-ticker OOS geo_means: "BTC-USD: OOS factors ... geo_mean = 0.925"
     per_ticker = {}
-    for m in re.finditer(r'(\S+):\s*OOS factors.*?geo_mean\s*=\s*([\d.]+)', output):
-        per_ticker[m.group(1)] = float(m.group(2))
-    result["per_ticker"] = per_ticker
-
     per_ticker_trades = {}
-    for m in re.finditer(r'(\S+):\s*OOS factors.*?total_trades\s*=\s*(\d+)', output):
-        per_ticker_trades[m.group(1)] = int(m.group(2))
+    per_ticker_benchmark = {}
+    per_ticker_alpha = {}
+
+    headline_match = re.search(
+        r'Walk-forward:.*?,\s*([A-Za-z0-9_]+)\s+geo_mean\s*=\s*([-\d.]+),\s*alpha_geo_mean',
+        output,
+    )
+    if headline_match:
+        result["benchmark_name"] = headline_match.group(1).upper()
+
+    for line in output.splitlines():
+        if ": OOS factors across folds" not in line:
+            continue
+        ticker_match = re.match(r'\s*(\S+):\s*OOS factors across folds', line)
+        if not ticker_match:
+            continue
+        ticker = ticker_match.group(1)
+
+        geo_match = re.search(r'geo_mean\s*=\s*([-\d.]+)', line)
+        if geo_match:
+            per_ticker[ticker] = float(geo_match.group(1))
+
+        trades_match = re.search(r'total_trades\s*=\s*(\d+)', line)
+        if trades_match:
+            per_ticker_trades[ticker] = int(trades_match.group(1))
+
+        alpha_match = re.search(r'alpha_geo_mean\s*=\s*([-\d.]+)', line)
+        if alpha_match:
+            per_ticker_alpha[ticker] = float(alpha_match.group(1))
+
+        for label, value in re.findall(r'([A-Za-z0-9_]+_geo_mean)\s*=\s*([-\d.]+)', line):
+            if label == "alpha_geo_mean":
+                continue
+            base = label[:-len("_geo_mean")]
+            if base:
+                result["benchmark_name"] = base.upper()
+                per_ticker_benchmark[ticker] = float(value)
+                break
+
+    result["per_ticker"] = per_ticker
     result["per_ticker_trades"] = per_ticker_trades
+    result["per_ticker_benchmark"] = per_ticker_benchmark
+    result["per_ticker_alpha"] = per_ticker_alpha
 
     return result
 
@@ -1585,24 +1764,31 @@ def run_agent(args):
             print("  Asking LLM for next strategy...")
             response_text = call_llm(messages, args, client=client, model_id=model_id)
 
-            if not response_text:
-                print("  [WARN] Empty LLM response, retrying in 5s...")
-                time.sleep(5)
-                state.experiment_count -= 1
-                continue
-
             # --- Step 2: Extract and validate strategy code ---
             code = extract_strategy_code(response_text)
             description = extract_description(response_text)
 
             if code is None:
-                print("  [WARN] No code block in response, nudging LLM...")
-                conv.add_exchange(
-                    "Propose the next strategy.",
-                    "(no code block found — output the COMPLETE strategy.py "
-                    "inside a ```python ... ``` block)")
-                state.experiment_count -= 1
-                continue
+                format_issue = "an empty response" if not response_text.strip() else "no python code block"
+                print(f"  [FORMAT ERROR] {format_issue}")
+                fix_msg = build_format_repair_message(format_issue)
+                fix_messages = conv.messages(fix_msg)
+                fix_response = call_llm(fix_messages, args, client=client, model_id=model_id)
+                if description == "no description":
+                    fix_desc = extract_description(fix_response)
+                    if fix_desc != "no description":
+                        description = fix_desc
+                code = extract_strategy_code(fix_response)
+                if code:
+                    description += " (format fix)"
+                else:
+                    print("  [SKIP] Could not recover a valid python code block.")
+                    conv.add_exchange(
+                        "Propose the next strategy.",
+                        "(format failure — output the COMPLETE strategy.py "
+                        "inside a single ```python ... ``` block)")
+                    state.experiment_count -= 1
+                    continue
 
             # Auto-fix common mistakes (selective imports → wildcard, strip prints)
             code = fix_strategy_code(code)
@@ -1626,9 +1812,24 @@ def run_agent(args):
             # Contract check
             contract_err = validate_contract(code)
             if contract_err:
-                print(f"  [CONTRACT ERROR] {contract_err}, skipping...")
-                state.experiment_count -= 1
-                continue
+                print(f"  [CONTRACT ERROR] {contract_err}")
+                fix_msg = build_contract_message(contract_err)
+                fix_messages = conv.messages(fix_msg)
+                fix_response = call_llm(fix_messages, args, client=client, model_id=model_id)
+                fix_code = extract_strategy_code(fix_response)
+                if fix_code:
+                    fix_code = fix_strategy_code(fix_code)
+                fix_err = validate_contract(fix_code) if fix_code else "Missing corrected code block"
+                if fix_code is None or validate_syntax(fix_code) or fix_err:
+                    print("  [SKIP] Could not fix contract, skipping...")
+                    state.experiment_count -= 1
+                    continue
+                if description == "no description":
+                    fix_desc = extract_description(fix_response)
+                    if fix_desc != "no description":
+                        description = fix_desc
+                code = fix_code
+                description += " (contract fix)"
 
             print(f"  Strategy: {description}")
 
@@ -1777,9 +1978,15 @@ def run_agent(args):
         fold_xs = run_result.get("fold_xs", [])
         params_str = format_optimal_params(meta, fold_xs)
         per_ticker_dict = run_result.get("per_ticker", {})
+        per_ticker_alpha_dict = run_result.get("per_ticker_alpha", {})
         per_ticker_trades = run_result.get("per_ticker_trades", {})
+        benchmark_name = run_result.get("benchmark_name", "")
+        if not benchmark_name and market_mode == "crypto":
+            benchmark_name = "HODL"
         per_ticker_str = format_per_ticker(
             per_ticker_dict, test_days=DEFAULT_TEST_DAYS, bars_per_year=bars_per_year)
+        per_ticker_alpha_str = format_per_ticker(
+            per_ticker_alpha_dict, test_days=DEFAULT_TEST_DAYS, bars_per_year=bars_per_year)
         trade_counts_str = format_trade_counts(per_ticker_trades)
         flat_result = is_flat_result(run_result)
         reject_flat = flat_result and not this_is_baseline
@@ -1789,7 +1996,9 @@ def run_agent(args):
         if params_str:
             print(f"  Params (median): {params_str}")
         if per_ticker_str:
-            print(f"  Per-ticker: {per_ticker_str}")
+            print(f"  Per-ticker raw: {per_ticker_str}")
+        if per_ticker_alpha_str:
+            print(f"  Per-ticker alpha vs {benchmark_name}: {per_ticker_alpha_str}")
         if trade_counts_str:
             print(f"  Trades: {trade_counts_str}")
         if reject_flat:
@@ -1806,6 +2015,8 @@ def run_agent(args):
             state.best_commit = commit
             state.current_strategy = code
             state.best_per_ticker = per_ticker_str
+            state.best_per_ticker_alpha = per_ticker_alpha_str
+            state.benchmark_name = benchmark_name
             delta = score - prev_best
             print(f"  ✓ KEEP  score={score:.4f}  g={growth:.3f}/v={vol:.3f}  "
                   f"ann={sign}{ann_return:.1f}%  (+{delta:.4f} vs prev best)")
@@ -1826,7 +2037,9 @@ def run_agent(args):
             best_fold=run_result.get("best", 0),
             median_params=params_str,
             per_ticker=per_ticker_str,
+            per_ticker_alpha=per_ticker_alpha_str,
             trade_counts=trade_counts_str,
+            benchmark_name=benchmark_name,
             strategy_code=code,
             family=infer_strategy_family(description, code))
         log_result(result)
@@ -1839,7 +2052,10 @@ def run_agent(args):
         if params_str:
             result_parts.append(f"  params: {params_str}")
         if per_ticker_str:
-            result_parts.append(f"  per-ticker: {per_ticker_str}")
+            result_parts.append(f"  per-ticker raw: {per_ticker_str}")
+        if per_ticker_alpha_str:
+            result_parts.append(
+                f"  per-ticker alpha vs {benchmark_name}: {per_ticker_alpha_str}")
         if trade_counts_str:
             result_parts.append(f"  trades: {trade_counts_str}")
         conv.add_exchange(

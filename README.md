@@ -685,6 +685,22 @@ Parameters that affect only the trading logic (like cooldowns or thresholds) go
 directly into the `@njit` loop as scalars.  This separation maximises the amount
 of work done at numpy/numba speed.
 
+## Recent Updates:
+
+- Added crypto mode to trading.py with --market-mode crypto, HODL-relative optimization/scoring, and benchmark-aware walk-forward summaries.
+- Added crypto helper indicators to strategy_helpers.py: rolling_vwap_np, vwap_deviation_np, choppiness_index_np, realized_volatility_np, distance_from_high_np, and distance_from_low_np.
+- Added OOS trade-count reporting to trading.py and agent.py, including per-fold trades, per-ticker totals, and total OOS trades.
+- Hardened agent.py against degenerate flat/no-trade “winners,” including the return 1.0, 0 fallback and masked zero-division fixes.
+- Made agent.py crypto-aware for market detection, 365-day annualization, and crypto-specific prompt guidance.
+- Updated README.md for the new crypto mode, helper count increase from 93 to 99, and revised local model launch examples.
+- Switched native Claude and MiniMax calls in agent.py to output_config={"effort": "high"}.
+- Routed local Qwen models through the OpenAI-compatible path in agent.py instead of the native-provider shortcuts.
+- Moved the progress image to the top of README.md for a clearer first impression.
+ Refined agent.py to display per-ticker raw returns separately from per-ticker alpha vs HODL, so the log now matches the score logic.
+- Tightened agent.py prompt/contract rules with stricter simulate(...) signature checks, better variables validation, and targeted repair prompts for empty outputs and malformed code.
+- Added more specific crash guidance in agent.py for Numba array-vs-scalar mistakes and wrong argument counts.
+- Created the baseline strategy.py commit used as the starting point for agent experiments.
+
 ## Acknowledgements
 
 - [Karpathy's autoresearch](https://github.com/karpathy/autoresearch) for the
