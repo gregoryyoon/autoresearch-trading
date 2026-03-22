@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 360" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <filter id="sh4" x="-3%" y="-3%" width="106%" height="106%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="3" flood-color="#000" flood-opacity="0.12"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="360" rx="12" fill="#FAFAFA" stroke="#E0E0E0" stroke-width="1"/>
+
+  <!-- Title -->
+  <text x="450" y="35" text-anchor="middle" font-size="18" font-weight="700" fill="#212121" letter-spacing="0.5">The Split-Brain Pattern — Beyond Trading</text>
+  <text x="450" y="53" text-anchor="middle" font-size="11.5" fill="#757575">Anywhere you have structural choices + continuous parameters + a fast simulator</text>
+
+  <!-- Central pattern box -->
+  <rect x="310" y="70" width="280" height="60" rx="10" fill="white" stroke="#424242" stroke-width="2" filter="url(#sh4)"/>
+  <text x="450" y="93" text-anchor="middle" font-size="12" font-weight="700" fill="#212121">LLM writes discrete logic</text>
+  <text x="450" y="112" text-anchor="middle" font-size="12" font-weight="700" fill="#212121">Optimizer tunes continuous params</text>
+
+  <!-- Spokes going down to application domains -->
+  <!-- Lines from center to each domain -->
+  <line x1="150" y1="130" x2="350" y2="130" stroke="#E0E0E0" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="550" y1="130" x2="750" y2="130" stroke="#E0E0E0" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- Domain 1: Trading (highlight) -->
+  <rect x="30" y="155" width="155" height="120" rx="8" fill="white" stroke="#1565C0" stroke-width="2" filter="url(#sh4)"/>
+  <rect x="30" y="155" width="155" height="24" rx="8" fill="#1565C0"/>
+  <rect x="30" y="170" width="155" height="9" fill="#1565C0"/>
+  <text x="46" y="173" font-size="10.5" font-weight="700" fill="white">📈 Trading</text>
+  <text x="46" y="200" font-size="9" fill="#424242"><tspan font-weight="600" fill="#1565C0">LLM:</tspan> Signal logic</text>
+  <text x="46" y="215" font-size="9" fill="#424242"><tspan font-weight="600" fill="#6A1B9A">Opt:</tspan> Stop-loss, windows</text>
+  <text x="46" y="230" font-size="9" fill="#424242"><tspan font-weight="600" fill="#E65100">Sim:</tspan> Walk-forward BT</text>
+  <text x="46" y="255" font-size="8.5" fill="#78909C" font-style="italic">This repo ✓</text>
+
+  <!-- Domain 2: Robotics -->
+  <rect x="200" y="155" width="155" height="120" rx="8" fill="white" stroke="#00838F" stroke-width="1.5" filter="url(#sh4)"/>
+  <rect x="200" y="155" width="155" height="24" rx="8" fill="#00838F"/>
+  <rect x="200" y="170" width="155" height="9" fill="#00838F"/>
+  <text x="216" y="173" font-size="10.5" font-weight="700" fill="white">🤖 Robotics</text>
+  <text x="216" y="200" font-size="9" fill="#424242"><tspan font-weight="600" fill="#1565C0">LLM:</tspan> State machine</text>
+  <text x="216" y="215" font-size="9" fill="#424242"><tspan font-weight="600" fill="#6A1B9A">Opt:</tspan> PID gains, torques</text>
+  <text x="216" y="230" font-size="9" fill="#424242"><tspan font-weight="600" fill="#E65100">Sim:</tspan> Physics engine</text>
+
+  <!-- Domain 3: Supply Chain -->
+  <rect x="370" y="155" width="155" height="120" rx="8" fill="white" stroke="#4E342E" stroke-width="1.5" filter="url(#sh4)"/>
+  <rect x="370" y="155" width="155" height="24" rx="8" fill="#4E342E"/>
+  <rect x="370" y="170" width="155" height="9" fill="#4E342E"/>
+  <text x="386" y="173" font-size="10.5" font-weight="700" fill="white">📦 Supply Chain</text>
+  <text x="386" y="200" font-size="9" fill="#424242"><tspan font-weight="600" fill="#1565C0">LLM:</tspan> Routing heuristics</text>
+  <text x="386" y="215" font-size="9" fill="#424242"><tspan font-weight="600" fill="#6A1B9A">Opt:</tspan> Stock thresholds</text>
+  <text x="386" y="230" font-size="9" fill="#424242"><tspan font-weight="600" fill="#E65100">Sim:</tspan> Monte Carlo</text>
+
+  <!-- Domain 4: Chemical Eng -->
+  <rect x="540" y="155" width="155" height="120" rx="8" fill="white" stroke="#AD1457" stroke-width="1.5" filter="url(#sh4)"/>
+  <rect x="540" y="155" width="155" height="24" rx="8" fill="#AD1457"/>
+  <rect x="540" y="170" width="155" height="9" fill="#AD1457"/>
+  <text x="556" y="173" font-size="10.5" font-weight="700" fill="white">⚗ Materials</text>
+  <text x="556" y="200" font-size="9" fill="#424242"><tspan font-weight="600" fill="#1565C0">LLM:</tspan> Process steps</text>
+  <text x="556" y="215" font-size="9" fill="#424242"><tspan font-weight="600" fill="#6A1B9A">Opt:</tspan> Temps, pressures</text>
+  <text x="556" y="230" font-size="9" fill="#424242"><tspan font-weight="600" fill="#E65100">Sim:</tspan> Process simulator</text>
+
+  <!-- Domain 5: Game AI -->
+  <rect x="710" y="155" width="155" height="120" rx="8" fill="white" stroke="#5C6BC0" stroke-width="1.5" filter="url(#sh4)"/>
+  <rect x="710" y="155" width="155" height="24" rx="8" fill="#5C6BC0"/>
+  <rect x="710" y="170" width="155" height="9" fill="#5C6BC0"/>
+  <text x="726" y="173" font-size="10.5" font-weight="700" fill="white">🎮 Game AI</text>
+  <text x="726" y="200" font-size="9" fill="#424242"><tspan font-weight="600" fill="#1565C0">LLM:</tspan> Behavior trees</text>
+  <text x="726" y="215" font-size="9" fill="#424242"><tspan font-weight="600" fill="#6A1B9A">Opt:</tspan> Vision, cooldowns</text>
+  <text x="726" y="230" font-size="9" fill="#424242"><tspan font-weight="600" fill="#E65100">Sim:</tspan> Headless matches</text>
+
+  <!-- Connecting lines from pattern to domains -->
+  <line x1="450" y1="130" x2="107" y2="155" stroke="#BDBDBD" stroke-width="1"/>
+  <line x1="450" y1="130" x2="277" y2="155" stroke="#BDBDBD" stroke-width="1"/>
+  <line x1="450" y1="130" x2="450" y2="155" stroke="#BDBDBD" stroke-width="1"/>
+  <line x1="450" y1="130" x2="617" y2="155" stroke="#BDBDBD" stroke-width="1"/>
+  <line x1="450" y1="130" x2="787" y2="155" stroke="#BDBDBD" stroke-width="1"/>
+
+  <!-- Bottom summary -->
+  <rect x="100" y="295" width="700" height="44" rx="8" fill="white" stroke="#E0E0E0" stroke-width="1" filter="url(#sh4)"/>
+  <text x="450" y="315" text-anchor="middle" font-size="11" fill="#424242"><tspan font-weight="700" fill="#212121">The universal pattern:</tspan>  LLM excels at <tspan fill="#1565C0" font-weight="600">combinatorial structure</tspan>  ·  Optimizer excels at <tspan fill="#6A1B9A" font-weight="600">continuous search</tspan></text>
+  <text x="450" y="331" text-anchor="middle" font-size="10" fill="#78909C">Separating them gives each tool a clean signal and eliminates the hallucination loop</text>
+
+  <!-- Bottom attribution -->
+  <text x="450" y="356" text-anchor="middle" font-size="9" fill="#9E9E9E">autoresearch-trading · github.com/dietmarwo/autoresearch-trading</text>
+</svg>

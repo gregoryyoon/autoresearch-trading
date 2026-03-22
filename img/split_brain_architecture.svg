@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 520" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <linearGradient id="leftBrainGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1565C0"/>
+      <stop offset="100%" stop-color="#0D47A1"/>
+    </linearGradient>
+    <linearGradient id="rightBrainGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6A1B9A"/>
+      <stop offset="100%" stop-color="#4A148C"/>
+    </linearGradient>
+    <linearGradient id="frameGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#E65100"/>
+      <stop offset="100%" stop-color="#BF360C"/>
+    </linearGradient>
+    <linearGradient id="scoreGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2E7D32"/>
+      <stop offset="100%" stop-color="#1B5E20"/>
+    </linearGradient>
+    <filter id="shadow" x="-4%" y="-4%" width="108%" height="108%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-color="#000" flood-opacity="0.15"/>
+    </filter>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#1565C0"/>
+    </marker>
+    <marker id="arrowPurple" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6A1B9A"/>
+    </marker>
+    <marker id="arrowOrange" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#E65100"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2E7D32"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="520" rx="12" fill="#FAFAFA" stroke="#E0E0E0" stroke-width="1"/>
+
+  <!-- Title -->
+  <text x="450" y="38" text-anchor="middle" font-size="18" font-weight="700" fill="#212121" letter-spacing="0.5">The Split-Brain Architecture</text>
+  <text x="450" y="58" text-anchor="middle" font-size="12" fill="#757575" letter-spacing="0.3">Decouple strategic reasoning from numerical optimization</text>
+
+  <!-- LEFT BRAIN BOX -->
+  <rect x="40" y="85" width="260" height="220" rx="10" fill="white" stroke="#1565C0" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="40" y="85" width="260" height="36" rx="10" fill="url(#leftBrainGrad)"/>
+  <rect x="40" y="105" width="260" height="16" fill="url(#leftBrainGrad)"/>
+  <text x="60" y="108" font-size="13" font-weight="700" fill="white" letter-spacing="0.4">🧠  LEFT BRAIN</text>
+  <text x="60" y="143" font-size="11" font-weight="600" fill="#1565C0">Strategic Reasoning (LLM)</text>
+  <line x1="60" y1="152" x2="280" y2="152" stroke="#E3F2FD" stroke-width="1"/>
+  <text x="60" y="173" font-size="10.5" fill="#424242">• Designs strategy structure</text>
+  <text x="60" y="193" font-size="10.5" fill="#424242">• Selects indicators (RSI, MACD, …)</text>
+  <text x="60" y="213" font-size="10.5" fill="#424242">• Writes buy / sell logic</text>
+  <text x="60" y="233" font-size="10.5" fill="#424242">• Defines position sizing rules</text>
+  <text x="60" y="258" font-size="10" fill="#78909C" font-style="italic">Creative · Combinatorial · Discrete</text>
+  <text x="60" y="278" font-size="10" fill="#78909C" font-style="italic">What LLMs do best</text>
+
+  <!-- RIGHT BRAIN BOX -->
+  <rect x="600" y="85" width="260" height="220" rx="10" fill="white" stroke="#6A1B9A" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="600" y="85" width="260" height="36" rx="10" fill="url(#rightBrainGrad)"/>
+  <rect x="600" y="105" width="260" height="16" fill="url(#rightBrainGrad)"/>
+  <text x="620" y="108" font-size="13" font-weight="700" fill="white" letter-spacing="0.4">🔢  RIGHT BRAIN</text>
+  <text x="620" y="143" font-size="11" font-weight="600" fill="#6A1B9A">Mathematical Precision (Optimizer)</text>
+  <line x1="620" y1="152" x2="840" y2="152" stroke="#F3E5F5" stroke-width="1"/>
+  <text x="620" y="173" font-size="10.5" fill="#424242">• Tunes continuous parameters</text>
+  <text x="620" y="193" font-size="10.5" fill="#424242">• 10,000+ evaluations / second</text>
+  <text x="620" y="213" font-size="10.5" fill="#424242">• Parallel retries on all CPU cores</text>
+  <text x="620" y="233" font-size="10.5" fill="#424242">• fcmaes / BiteOpt evolutionary search</text>
+  <text x="620" y="258" font-size="10" fill="#78909C" font-style="italic">Mechanical · Continuous · Systematic</text>
+  <text x="620" y="278" font-size="10" fill="#78909C" font-style="italic">What optimizers do best</text>
+
+  <!-- FRAMEWORK BOX (center) -->
+  <rect x="330" y="130" width="240" height="130" rx="10" fill="white" stroke="#E65100" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="330" y="130" width="240" height="32" rx="10" fill="url(#frameGrad)"/>
+  <rect x="330" y="148" width="240" height="14" fill="url(#frameGrad)"/>
+  <text x="350" y="152" font-size="12" font-weight="700" fill="white" letter-spacing="0.3">⚙  TRADING FRAMEWORK</text>
+  <text x="350" y="182" font-size="10.5" fill="#424242">strategy.py — logic + bounds</text>
+  <text x="350" y="200" font-size="10.5" fill="#424242">trading.py — walk-forward engine</text>
+  <text x="350" y="218" font-size="10.5" fill="#424242">strategy_helpers.py — 99 indicators</text>
+  <text x="350" y="240" font-size="10" fill="#78909C" font-style="italic">numba-compiled · numpy-vectorized</text>
+
+  <!-- ARROWS: Left Brain → Framework -->
+  <path d="M 300 175 L 325 175" fill="none" stroke="#1565C0" stroke-width="2" marker-end="url(#arrowBlue)"/>
+  <text x="300" y="165" text-anchor="middle" font-size="9" fill="#1565C0" font-weight="600">①</text>
+  <text x="313" y="165" font-size="8" fill="#1565C0">Proposes</text>
+  <text x="313" y="174" font-size="8" fill="#1565C0">structure</text>
+
+  <!-- ARROWS: Framework → Right Brain -->
+  <path d="M 570 185 L 595 185" fill="none" stroke="#E65100" stroke-width="2" marker-end="url(#arrowOrange)"/>
+  <text x="583" y="175" font-size="9" fill="#E65100" font-weight="600">②</text>
+  <text x="583" y="200" font-size="8" fill="#E65100" text-anchor="middle">Passes logic</text>
+
+  <!-- ARROWS: Right Brain → Framework (return) -->
+  <path d="M 595 210 L 575 210" fill="none" stroke="#6A1B9A" stroke-width="2" marker-end="url(#arrowPurple)"/>
+  <text x="583" y="224" font-size="8" fill="#6A1B9A" text-anchor="middle">Best params</text>
+  <text x="591" y="205" font-size="9" fill="#6A1B9A" font-weight="600">③</text>
+
+  <!-- SCORE BOX -->
+  <rect x="350" y="380" width="200" height="70" rx="10" fill="white" stroke="#2E7D32" stroke-width="2" filter="url(#shadow)"/>
+  <rect x="350" y="380" width="200" height="28" rx="10" fill="url(#scoreGrad)"/>
+  <rect x="350" y="396" width="200" height="12" fill="url(#scoreGrad)"/>
+  <text x="370" y="400" font-size="12" font-weight="700" fill="white" letter-spacing="0.3">✓  CLEAN SCORE</text>
+  <text x="370" y="425" font-size="10" fill="#424242">Walk-forward validated</text>
+  <text x="370" y="440" font-size="10" fill="#424242">Pure reflection of the idea</text>
+
+  <!-- Arrow: Framework → Score -->
+  <path d="M 450 260 L 450 375" fill="none" stroke="#2E7D32" stroke-width="2" marker-end="url(#arrowGreen)" stroke-dasharray="6,3"/>
+  <text x="462" y="320" font-size="9" fill="#2E7D32" font-weight="600">④</text>
+  <text x="462" y="334" font-size="8.5" fill="#2E7D32">Optimized</text>
+  <text x="462" y="346" font-size="8.5" fill="#2E7D32">backtest result</text>
+
+  <!-- Arrow: Score → Left Brain (feedback loop) -->
+  <path d="M 350 420 Q 170 460 170 310 L 170 305" fill="none" stroke="#2E7D32" stroke-width="1.5" marker-end="url(#arrowGreen)" stroke-dasharray="4,3"/>
+  <text x="180" y="380" font-size="8.5" fill="#2E7D32">⑤ Feedback to LLM</text>
+  <text x="180" y="393" font-size="8" fill="#78909C" font-style="italic">"Does this logic work</text>
+  <text x="180" y="404" font-size="8" fill="#78909C" font-style="italic"> when math is perfect?"</text>
+
+  <!-- Key insight callout -->
+  <rect x="570" y="370" width="290" height="85" rx="8" fill="#FFF8E1" stroke="#FFB300" stroke-width="1.5"/>
+  <text x="588" y="391" font-size="10" font-weight="700" fill="#E65100">KEY INSIGHT</text>
+  <text x="588" y="408" font-size="9.5" fill="#424242">The AI is never punished for bad math.</text>
+  <text x="588" y="423" font-size="9.5" fill="#424242">Because the optimizer perfectly tuned the</text>
+  <text x="588" y="438" font-size="9.5" fill="#424242">numbers, the score is a pure reflection of</text>
+  <text x="588" y="453" font-size="9.5" fill="#424242">the AI's structural idea.</text>
+
+  <!-- Bottom attribution -->
+  <text x="450" y="500" text-anchor="middle" font-size="9" fill="#9E9E9E">autoresearch-trading · github.com/dietmarwo/autoresearch-trading</text>
+</svg>

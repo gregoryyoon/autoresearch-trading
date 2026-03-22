@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 400" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <linearGradient id="trainGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1565C0" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#0D47A1" stop-opacity="0.85"/>
+    </linearGradient>
+    <linearGradient id="testGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#E65100" stop-opacity="0.85"/>
+      <stop offset="100%" stop-color="#BF360C" stop-opacity="0.85"/>
+    </linearGradient>
+    <linearGradient id="scoreBarGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#2E7D32"/>
+      <stop offset="100%" stop-color="#1B5E20"/>
+    </linearGradient>
+    <filter id="sh3" x="-2%" y="-2%" width="104%" height="104%">
+      <feDropShadow dx="0" dy="1" stdDeviation="2" flood-color="#000" flood-opacity="0.1"/>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="400" rx="12" fill="#FAFAFA" stroke="#E0E0E0" stroke-width="1"/>
+
+  <!-- Title -->
+  <text x="450" y="35" text-anchor="middle" font-size="18" font-weight="700" fill="#212121" letter-spacing="0.5">Walk-Forward Validation</text>
+  <text x="450" y="53" text-anchor="middle" font-size="11.5" fill="#757575">Rolling train/test splits across multiple market regimes → robust out-of-sample scoring</text>
+
+  <!-- Timeline axis -->
+  <line x1="80" y1="290" x2="720" y2="290" stroke="#BDBDBD" stroke-width="1.5"/>
+  <text x="80" y="306" font-size="9" fill="#9E9E9E">2019</text>
+  <text x="240" y="306" font-size="9" fill="#9E9E9E">2020</text>
+  <text x="400" y="306" font-size="9" fill="#9E9E9E">2021</text>
+  <text x="560" y="306" font-size="9" fill="#9E9E9E">2022</text>
+  <text x="700" y="306" font-size="9" fill="#9E9E9E">2023</text>
+  <!-- tick marks -->
+  <line x1="80" y1="287" x2="80" y2="293" stroke="#BDBDBD" stroke-width="1.5"/>
+  <line x1="240" y1="287" x2="240" y2="293" stroke="#BDBDBD" stroke-width="1.5"/>
+  <line x1="400" y1="287" x2="400" y2="293" stroke="#BDBDBD" stroke-width="1.5"/>
+  <line x1="560" y1="287" x2="560" y2="293" stroke="#BDBDBD" stroke-width="1.5"/>
+  <line x1="720" y1="287" x2="720" y2="293" stroke="#BDBDBD" stroke-width="1.5"/>
+
+  <!-- Fold labels -->
+  <text x="55" y="92" font-size="10" font-weight="600" fill="#424242" text-anchor="end">Fold 1</text>
+  <text x="55" y="127" font-size="10" font-weight="600" fill="#424242" text-anchor="end">Fold 2</text>
+  <text x="55" y="162" font-size="10" font-weight="600" fill="#424242" text-anchor="end">Fold 3</text>
+  <text x="55" y="197" font-size="10" font-weight="600" fill="#424242" text-anchor="end">Fold 4</text>
+  <text x="55" y="232" font-size="10" font-weight="600" fill="#424242" text-anchor="end">Fold 5</text>
+  <text x="55" y="267" font-size="10" font-weight="600" fill="#424242" text-anchor="end">Fold N</text>
+  <!-- ... dots for fold N -->
+  <text x="48" y="250" font-size="14" fill="#9E9E9E" text-anchor="end">⋮</text>
+
+  <!-- Fold 1 -->
+  <rect x="80" y="78" width="260" height="20" rx="3" fill="url(#trainGrad)" filter="url(#sh3)"/>
+  <rect x="340" y="78" width="80" height="20" rx="3" fill="url(#testGrad)" filter="url(#sh3)"/>
+  <text x="210" y="92" text-anchor="middle" font-size="9" fill="white" font-weight="600">TRAIN (365 days)</text>
+  <text x="380" y="92" text-anchor="middle" font-size="9" fill="white" font-weight="600">TEST</text>
+
+  <!-- Fold 2 -->
+  <rect x="140" y="113" width="260" height="20" rx="3" fill="url(#trainGrad)" filter="url(#sh3)"/>
+  <rect x="400" y="113" width="80" height="20" rx="3" fill="url(#testGrad)" filter="url(#sh3)"/>
+  <text x="270" y="127" text-anchor="middle" font-size="9" fill="white" font-weight="600">TRAIN (365 days)</text>
+  <text x="440" y="127" text-anchor="middle" font-size="9" fill="white" font-weight="600">TEST</text>
+
+  <!-- Fold 3 -->
+  <rect x="200" y="148" width="260" height="20" rx="3" fill="url(#trainGrad)" filter="url(#sh3)"/>
+  <rect x="460" y="148" width="80" height="20" rx="3" fill="url(#testGrad)" filter="url(#sh3)"/>
+  <text x="330" y="162" text-anchor="middle" font-size="9" fill="white" font-weight="600">TRAIN (365 days)</text>
+  <text x="500" y="162" text-anchor="middle" font-size="9" fill="white" font-weight="600">TEST</text>
+
+  <!-- Fold 4 -->
+  <rect x="260" y="183" width="260" height="20" rx="3" fill="url(#trainGrad)" filter="url(#sh3)"/>
+  <rect x="520" y="183" width="80" height="20" rx="3" fill="url(#testGrad)" filter="url(#sh3)"/>
+  <text x="390" y="197" text-anchor="middle" font-size="9" fill="white" font-weight="600">TRAIN (365 days)</text>
+  <text x="560" y="197" text-anchor="middle" font-size="9" fill="white" font-weight="600">TEST</text>
+
+  <!-- Fold 5 -->
+  <rect x="320" y="218" width="260" height="20" rx="3" fill="url(#trainGrad)" filter="url(#sh3)"/>
+  <rect x="580" y="218" width="80" height="20" rx="3" fill="url(#testGrad)" filter="url(#sh3)"/>
+
+  <!-- Fold N (faded) -->
+  <rect x="380" y="253" width="260" height="20" rx="3" fill="url(#trainGrad)" filter="url(#sh3)" opacity="0.6"/>
+  <rect x="640" y="253" width="80" height="20" rx="3" fill="url(#testGrad)" filter="url(#sh3)" opacity="0.6"/>
+
+  <!-- Staircase arrow hint -->
+  <path d="M 420 98 L 480 133" fill="none" stroke="#BDBDBD" stroke-width="1" stroke-dasharray="3,3"/>
+  <path d="M 480 133 L 540 168" fill="none" stroke="#BDBDBD" stroke-width="1" stroke-dasharray="3,3"/>
+  <path d="M 540 168 L 600 203" fill="none" stroke="#BDBDBD" stroke-width="1" stroke-dasharray="3,3"/>
+  <path d="M 600 203 L 660 238" fill="none" stroke="#BDBDBD" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <!-- Right side: Score aggregation -->
+  <rect x="740" y="72" width="145" height="220" rx="10" fill="white" stroke="#2E7D32" stroke-width="2" filter="url(#sh3)"/>
+  <text x="812" y="95" text-anchor="middle" font-size="11" font-weight="700" fill="#2E7D32">SCORE</text>
+  <line x1="755" y1="103" x2="870" y2="103" stroke="#E8F5E9" stroke-width="1"/>
+
+  <!-- Mini bar chart representing fold scores -->
+  <rect x="760" y="195" width="18" height="75" rx="2" fill="url(#scoreBarGrad)" opacity="0.9"/>
+  <rect x="783" y="220" width="18" height="50" rx="2" fill="url(#scoreBarGrad)" opacity="0.9"/>
+  <rect x="806" y="180" width="18" height="90" rx="2" fill="url(#scoreBarGrad)" opacity="0.9"/>
+  <rect x="829" y="210" width="18" height="60" rx="2" fill="url(#scoreBarGrad)" opacity="0.9"/>
+  <rect x="852" y="200" width="18" height="70" rx="2" fill="url(#scoreBarGrad)" opacity="0.9"/>
+
+  <!-- Score formula -->
+  <text x="812" y="118" text-anchor="middle" font-size="9" fill="#424242">μ(log returns)</text>
+  <text x="812" y="133" text-anchor="middle" font-size="9" fill="#424242">− 0.5 · σ(log returns)</text>
+  <line x1="755" y1="142" x2="870" y2="142" stroke="#E8F5E9" stroke-width="1"/>
+  <text x="812" y="158" text-anchor="middle" font-size="9" fill="#78909C" font-style="italic">Kelly-inspired</text>
+  <text x="812" y="172" text-anchor="middle" font-size="9" fill="#78909C" font-style="italic">risk penalty</text>
+
+  <!-- Arrows from folds to score box -->
+  <path d="M 420 88 L 735 150" fill="none" stroke="#C8E6C9" stroke-width="1" stroke-dasharray="3,2"/>
+  <path d="M 480 123 L 735 165" fill="none" stroke="#C8E6C9" stroke-width="1" stroke-dasharray="3,2"/>
+  <path d="M 540 158 L 735 180" fill="none" stroke="#C8E6C9" stroke-width="1" stroke-dasharray="3,2"/>
+  <path d="M 600 193 L 735 195" fill="none" stroke="#C8E6C9" stroke-width="1" stroke-dasharray="3,2"/>
+  <path d="M 660 228 L 735 210" fill="none" stroke="#C8E6C9" stroke-width="1" stroke-dasharray="3,2"/>
+
+  <!-- Legend -->
+  <rect x="80" y="330" width="16" height="12" rx="2" fill="url(#trainGrad)"/>
+  <text x="102" y="341" font-size="10" fill="#424242">Optimize on training window</text>
+  <rect x="280" y="330" width="16" height="12" rx="2" fill="url(#testGrad)"/>
+  <text x="302" y="341" font-size="10" fill="#424242">Evaluate on unseen test data (90 days)</text>
+  <rect x="540" y="330" width="16" height="12" rx="2" fill="url(#scoreBarGrad)"/>
+  <text x="562" y="341" font-size="10" fill="#424242">Aggregate all OOS fold results → single SCORE</text>
+
+  <!-- Key benefit -->
+  <rect x="80" y="355" width="730" height="26" rx="5" fill="#FFF8E1" stroke="#FFB300" stroke-width="1"/>
+  <text x="95" y="373" font-size="10" fill="#424242"><tspan font-weight="700" fill="#E65100">Why this matters:</tspan> A bad score definitively means the architecture change was bad, not just poorly tuned.</text>
+
+  <!-- Bottom attribution -->
+  <text x="450" y="396" text-anchor="middle" font-size="9" fill="#9E9E9E">autoresearch-trading · github.com/dietmarwo/autoresearch-trading</text>
+</svg>

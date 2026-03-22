@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 440" font-family="'Segoe UI', 'Helvetica Neue', Arial, sans-serif">
+  <defs>
+    <linearGradient id="agLlm" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#1565C0"/>
+      <stop offset="100%" stop-color="#0D47A1"/>
+    </linearGradient>
+    <linearGradient id="agVal" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F57C00"/>
+      <stop offset="100%" stop-color="#E65100"/>
+    </linearGradient>
+    <linearGradient id="agOpt" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#6A1B9A"/>
+      <stop offset="100%" stop-color="#4A148C"/>
+    </linearGradient>
+    <linearGradient id="agScore" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#2E7D32"/>
+      <stop offset="100%" stop-color="#1B5E20"/>
+    </linearGradient>
+    <linearGradient id="agGit" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#546E7A"/>
+      <stop offset="100%" stop-color="#37474F"/>
+    </linearGradient>
+    <filter id="sh2" x="-3%" y="-3%" width="106%" height="106%">
+      <feDropShadow dx="0" dy="1.5" stdDeviation="3" flood-color="#000" flood-opacity="0.12"/>
+    </filter>
+    <marker id="aArr" viewBox="0 0 10 10" refX="10" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#78909C"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="900" height="440" rx="12" fill="#FAFAFA" stroke="#E0E0E0" stroke-width="1"/>
+
+  <!-- Title -->
+  <text x="450" y="35" text-anchor="middle" font-size="18" font-weight="700" fill="#212121" letter-spacing="0.5">The Autonomous Agent Loop</text>
+  <text x="450" y="53" text-anchor="middle" font-size="11.5" fill="#757575">Each experiment: LLM proposes → Framework optimizes → Score feeds back → Repeat</text>
+
+  <!-- Step 1: LLM Proposes -->
+  <rect x="35" y="80" width="160" height="130" rx="10" fill="white" stroke="#1565C0" stroke-width="2" filter="url(#sh2)"/>
+  <rect x="35" y="80" width="160" height="28" rx="10" fill="url(#agLlm)"/>
+  <rect x="35" y="96" width="160" height="12" fill="url(#agLlm)"/>
+  <text x="50" y="99" font-size="11" font-weight="700" fill="white">① LLM Proposes</text>
+  <text x="50" y="128" font-size="9.5" fill="#424242">Reads experiment history</text>
+  <text x="50" y="143" font-size="9.5" fill="#424242">Designs new strategy.py</text>
+  <text x="50" y="158" font-size="9.5" fill="#424242">Picks indicators + logic</text>
+  <text x="50" y="178" font-size="9" fill="#78909C" font-style="italic">~1 artifact per round</text>
+  <text x="50" y="193" font-size="9" fill="#78909C" font-style="italic">No tool-calling needed</text>
+
+  <!-- Step 2: Validate & Commit -->
+  <rect x="225" y="80" width="150" height="130" rx="10" fill="white" stroke="#546E7A" stroke-width="2" filter="url(#sh2)"/>
+  <rect x="225" y="80" width="150" height="28" rx="10" fill="url(#agGit)"/>
+  <rect x="225" y="96" width="150" height="12" fill="url(#agGit)"/>
+  <text x="240" y="99" font-size="11" font-weight="700" fill="white">② Validate</text>
+  <text x="240" y="128" font-size="9.5" fill="#424242">ast.parse syntax check</text>
+  <text x="240" y="143" font-size="9.5" fill="#424242">Contract verification</text>
+  <text x="240" y="158" font-size="9.5" fill="#424242">git commit snapshot</text>
+  <text x="240" y="178" font-size="9" fill="#78909C" font-style="italic">Crash → traceback</text>
+  <text x="240" y="193" font-size="9" fill="#78909C" font-style="italic">sent to LLM (3 retries)</text>
+
+  <!-- Step 3: Optimize -->
+  <rect x="405" y="80" width="160" height="130" rx="10" fill="white" stroke="#6A1B9A" stroke-width="2" filter="url(#sh2)"/>
+  <rect x="405" y="80" width="160" height="28" rx="10" fill="url(#agOpt)"/>
+  <rect x="405" y="96" width="160" height="12" fill="url(#agOpt)"/>
+  <text x="420" y="99" font-size="11" font-weight="700" fill="white">③ Optimize</text>
+  <text x="420" y="128" font-size="9.5" fill="#424242">fcmaes / BiteOpt tunes</text>
+  <text x="420" y="143" font-size="9.5" fill="#424242">all continuous params</text>
+  <text x="420" y="158" font-size="9.5" fill="#424242">24 parallel retries</text>
+  <text x="420" y="178" font-size="9" fill="#78909C" font-style="italic">10,000+ evals/sec</text>
+  <text x="420" y="193" font-size="9" fill="#78909C" font-style="italic">All CPU cores utilized</text>
+
+  <!-- Step 4: Walk-Forward -->
+  <rect x="595" y="80" width="150" height="130" rx="10" fill="white" stroke="#E65100" stroke-width="2" filter="url(#sh2)"/>
+  <rect x="595" y="80" width="150" height="28" rx="10" fill="url(#agVal)"/>
+  <rect x="595" y="96" width="150" height="12" fill="url(#agVal)"/>
+  <text x="610" y="99" font-size="11" font-weight="700" fill="white">④ Walk-Forward</text>
+  <text x="610" y="128" font-size="9.5" fill="#424242">25+ rolling windows</text>
+  <text x="610" y="143" font-size="9.5" fill="#424242">Out-of-sample testing</text>
+  <text x="610" y="158" font-size="9.5" fill="#424242">Multiple market regimes</text>
+  <text x="610" y="178" font-size="9" fill="#78909C" font-style="italic">Bull · Bear · Sideways</text>
+  <text x="610" y="193" font-size="9" fill="#78909C" font-style="italic">Bootstrap confidence</text>
+
+  <!-- Step 5: Score & Decide -->
+  <rect x="775" y="80" width="95" height="130" rx="10" fill="white" stroke="#2E7D32" stroke-width="2" filter="url(#sh2)"/>
+  <rect x="775" y="80" width="95" height="28" rx="10" fill="url(#agScore)"/>
+  <rect x="775" y="96" width="95" height="12" fill="url(#agScore)"/>
+  <text x="790" y="99" font-size="11" font-weight="700" fill="white">⑤ Score</text>
+  <text x="790" y="128" font-size="9.5" fill="#424242">Log-wealth</text>
+  <text x="790" y="143" font-size="9.5" fill="#424242">Sharpe ratio</text>
+  <line x1="790" y1="152" x2="857" y2="152" stroke="#E8F5E9" stroke-width="1"/>
+  <text x="790" y="168" font-size="9.5" fill="#2E7D32" font-weight="600">Improved?</text>
+  <text x="790" y="183" font-size="9" fill="#424242">✓ Keep</text>
+  <text x="790" y="196" font-size="9" fill="#424242">✗ Revert</text>
+
+  <!-- Connecting arrows between steps -->
+  <path d="M 195 145 L 220 145" fill="none" stroke="#78909C" stroke-width="1.8" marker-end="url(#aArr)"/>
+  <path d="M 375 145 L 400 145" fill="none" stroke="#78909C" stroke-width="1.8" marker-end="url(#aArr)"/>
+  <path d="M 565 145 L 590 145" fill="none" stroke="#78909C" stroke-width="1.8" marker-end="url(#aArr)"/>
+  <path d="M 745 145 L 770 145" fill="none" stroke="#78909C" stroke-width="1.8" marker-end="url(#aArr)"/>
+
+  <!-- Feedback loop arrow (Score → LLM) -->
+  <path d="M 822 210 Q 822 260 780 280 L 115 280 Q 70 280 70 255 L 70 215" fill="none" stroke="#2E7D32" stroke-width="2" marker-end="url(#aArr)" stroke-dasharray="6,3"/>
+  <rect x="360" y="267" width="180" height="22" rx="4" fill="#E8F5E9" stroke="#2E7D32" stroke-width="1"/>
+  <text x="450" y="282" text-anchor="middle" font-size="9.5" fill="#2E7D32" font-weight="600">⟲ Feed score back to LLM</text>
+
+  <!-- Bottom section: Performance stats -->
+  <rect x="35" y="320" width="830" height="100" rx="10" fill="white" stroke="#E0E0E0" stroke-width="1" filter="url(#sh2)"/>
+  <text x="55" y="345" font-size="12" font-weight="700" fill="#212121">Performance on AMD 9950x (16 cores)</text>
+
+  <!-- Stat boxes -->
+  <rect x="55" y="358" width="185" height="46" rx="6" fill="#E3F2FD"/>
+  <text x="65" y="376" font-size="10" font-weight="600" fill="#1565C0">Quick mode (agent)</text>
+  <text x="65" y="393" font-size="16" font-weight="700" fill="#0D47A1">15–30 sec</text>
+
+  <rect x="260" y="358" width="185" height="46" rx="6" fill="#F3E5F5"/>
+  <text x="270" y="376" font-size="10" font-weight="600" fill="#6A1B9A">Full walk-forward</text>
+  <text x="270" y="393" font-size="16" font-weight="700" fill="#4A148C">1–2 min</text>
+
+  <rect x="465" y="358" width="185" height="46" rx="6" fill="#FFF3E0"/>
+  <text x="475" y="376" font-size="10" font-weight="600" fill="#E65100">Eval throughput</text>
+  <text x="475" y="393" font-size="16" font-weight="700" fill="#BF360C">10,000+/sec</text>
+
+  <rect x="670" y="358" width="175" height="46" rx="6" fill="#E8F5E9"/>
+  <text x="680" y="376" font-size="10" font-weight="600" fill="#2E7D32">Full experiment loop</text>
+  <text x="680" y="393" font-size="16" font-weight="700" fill="#1B5E20">~3 min</text>
+
+  <!-- Bottom attribution -->
+  <text x="450" y="432" text-anchor="middle" font-size="9" fill="#9E9E9E">autoresearch-trading · github.com/dietmarwo/autoresearch-trading</text>
+</svg>

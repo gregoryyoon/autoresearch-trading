@@ -12,6 +12,8 @@ If you've ever tried to get a language model to design a trading strategy on its
 
 Imagine an AI writes a strategy that buys when the RSI drops below a certain number. It guesses a threshold of 30, runs the test, and loses money. Now the AI is confused. Was using the RSI a bad idea? Or was 30 just the wrong number? The AI has no way of knowing. Because of this, it often abandons good ideas just because the parameters were slightly off.
 
+![Split-Brain Architecture](img/split_brain_architecture.svg)
+
 This project fixes that by splitting the job in half. Both tools get to do exactly what they are best at:
 
 1. **The AI handles the creative logic.** The agent acts like a human researcher. It decides which indicators to use, writes the buy and sell rules, and structures the code. 
@@ -24,6 +26,8 @@ Because the optimizer perfectly tuned the numbers first, the score is a pure ref
 ## Where else does this work?
 
 This "split brain" approach—letting an AI write the discrete logic tree while a classic optimizer tunes the continuous numbers—isn't just for trading. It solves the exact same problem anywhere you have a fast simulator. 
+
+![Beyond trading](img/beyond_trading.svg)
 
 Here are a few other places this architecture shines:
 
@@ -40,19 +44,6 @@ Anytime you have a mix of structural choices (code) and continuous numbers (para
 In Karpathy's original autoresearch, the AI agent modifies a neural network training script and observes whether validation loss improved after a 5-minute training run. The AI handles *everything* — architecture, hyperparameters, optimizer settings — and gets a single noisy sample of whether the change helped.
 
 This project splits the problem at the right seam:
-
-```text
-┌──────────────────────────┐     ┌──────────────────────────┐
-│      AI Agent (LLM)      │     │   Conventional Optimiser │
-│                          │     │       (fcmaes/BiteOpt)   │
-│  • Strategy structure    │     │                          │
-│  • Indicator selection   │────▶│  • Parameter tuning      │
-│  • Buy/sell logic        │     │  • 10,000+ evaluations   │
-│  • Position sizing       │     │  • All CPU cores         │
-│                          │     │  • Per fold, per ticker  │
-└──────────────────────────┘     └──────────────────────────┘
-         creative                       mechanical
-```
          
 This gives the AI a much cleaner signal than end-to-end autoresearch. 
 A bad score here definitively means the architecture change was bad, not just poorly tuned.
@@ -65,9 +56,13 @@ parameters for that structure.  Walk-forward validation on rolling out-of-sample
 windows measures whether the result generalises — producing a single scalar score
 that tells the agent whether its design change helped.
 
+![Agent loop](img/agent_loop.svg)
+
 The agent proposes a new strategy, the framework optimises and scores it, the agent
 sees the result, and the loop repeats indefinitely.  Leave it running overnight and
 wake up to a log of experiments and (hopefully) a profitable strategy.
+
+![Walk forward](img/walk_forward.svg)
 
 The AI focuses on the creative part where LLMs excel — structural decisions,
 combining ideas from the literature, pattern recognition across experiments.  The
@@ -282,12 +277,15 @@ common failure mode — numba type errors from calling non-njit functions inside
 
 **Context management**: each turn, the LLM receives a curated user message with
 best overall experiments, best-per-family representatives, strong discarded
-near-misses, representative failure modes, and recent experiments, plus the
-current best strategy code and one informative discarded strategy from a
-different family.  Only 2 lightweight conversation exchanges are kept (brief
-summaries, no code duplication).  This keeps the prompt diverse enough to avoid
-getting stuck in one strategy family while still fitting comfortably in a 50K
-context window.
+near-misses, representative failure modes, and recent experiments.  Most turns
+also include the current best strategy code plus 2 alternative reference
+strategies from different families.  Every exploration turn (default: every 6
+completed experiments) hides the current best code and instead shows up to 3
+alternative reference strategies so the model is pushed to branch out instead of
+hill-climbing forever.  Only 2 lightweight conversation exchanges are kept
+(brief summaries, no code duplication).  This keeps the prompt diverse enough
+to avoid getting stuck in one strategy family while still fitting comfortably in
+a 50K context window.
 
 **No tool use**: unlike agentic frameworks that have the LLM drive individual bash
 commands, this design has the LLM produce exactly one artifact per round trip — a
@@ -506,6 +504,15 @@ python agent.py --tag mar18
 
 # Crypto (more volatile market)
 python agent.py --tag mar18-crypto --tickers BTC-USD ETH-USD XRP-USD ADA-USD --quick
+
+# Push exploration turns more often
+python agent.py --tag mar18 --explore-every 4 --quick
+
+# Restart from a saved strategy file instead of base_strategy.py
+python agent.py --tag mar18-restart --seed-file ./saved_strategy.py --quick
+
+# Restart from strategy.py stored at a previous git revision
+python agent.py --tag mar18-restart --seed-commit abc1234 --quick
 ```
 
 **OpenAI API**
@@ -538,6 +545,54 @@ grep "keep" results.tsv | sort -t$'\t' -k2 -n | tail -1
 # See the git log of kept experiments
 git log --oneline autoresearch/mar18
 ```
+
+### 4. Restart from a seed
+
+By default, the agent starts from `base_strategy.py`.  To branch the search
+from a different starting point, pass exactly one of these flags:
+
+- `--seed-file PATH` — load a local strategy file and use it as the starting `strategy.py`.
+- `--seed-commit REV` — load `strategy.py` from a git revision such as a kept experiment commit.
+
+Startup order is deterministic: the agent checks out the chosen branch first,
+then writes the selected seed to `strategy.py`, preflights it, and runs the
+first experiment on that seed unchanged.  Only after that first scored run does
+the LLM start proposing modifications.
+
+Examples:
+
+```bash
+# Branch from a hand-picked strategy file
+python agent.py --tag mar20-alt1 --seed-file ./candidates/donchian_breakout.py --quick
+
+# Branch from a previous kept commit
+python agent.py --tag mar20-alt2 --seed-commit 30c7406 --quick
+```
+
+This is useful when a long run gets stuck in one family and you want to launch
+several shorter trajectories from different promising ideas without editing
+`base_strategy.py` by hand.
+
+### 5. Exploration turns
+
+The agent now alternates between two prompt styles:
+
+- **Exploitation turns** — show the current best code and ask for a stronger refinement.
+- **Exploration turns** — hide the current best code, show more alternative references, and explicitly ask for a structurally different valid idea.
+
+By default, an exploration turn happens every 6 completed experiments.  You can
+change that with:
+
+```bash
+# Explore more aggressively
+python agent.py --tag mar20 --explore-every 4 --quick
+
+# Disable scheduled exploration turns
+python agent.py --tag mar20 --explore-every 0
+```
+
+This is the easiest way to reduce "stuck in one family" behavior without
+loosening the syntax / contract validator.
 
 ## Customisation
 
@@ -687,6 +742,11 @@ of work done at numpy/numba speed.
 
 ## Recent Updates:
 
+- Added explicit seed restarts to agent.py with `--seed-file` and `--seed-commit`, so new runs can start from a chosen strategy instead of always from `base_strategy.py`.
+- Added scheduled exploration turns to agent.py with `--explore-every`, where the prompt hides the current best code and asks for a materially different valid idea instead of pure hill-climbing.
+- Expanded prompt references from a single discarded example to 2-3 alternative strategy files per turn, with more reference slots on exploration turns to improve structural diversity.
+- Improved strategy-family labeling in agent.py so prompt curation can distinguish families like breakout, mean-reversion, pullback, trend, MACD, Supertrend, Bollinger, Donchian, and different exit styles more reliably.
+- Updated README.md with the new seed-restart workflow, exploration-turn controls, and revised prompt-context description.
 - Added crypto mode to trading.py with --market-mode crypto, HODL-relative optimization/scoring, and benchmark-aware walk-forward summaries.
 - Added crypto helper indicators to strategy_helpers.py: rolling_vwap_np, vwap_deviation_np, choppiness_index_np, realized_volatility_np, distance_from_high_np, and distance_from_low_np.
 - Added OOS trade-count reporting to trading.py and agent.py, including per-fold trades, per-ticker totals, and total OOS trades.
@@ -696,7 +756,7 @@ of work done at numpy/numba speed.
 - Switched native Claude and MiniMax calls in agent.py to output_config={"effort": "high"}.
 - Routed local Qwen models through the OpenAI-compatible path in agent.py instead of the native-provider shortcuts.
 - Moved the progress image to the top of README.md for a clearer first impression.
- Refined agent.py to display per-ticker raw returns separately from per-ticker alpha vs HODL, so the log now matches the score logic.
+- Refined agent.py to display per-ticker raw returns separately from per-ticker alpha vs HODL, so the log now matches the score logic.
 - Tightened agent.py prompt/contract rules with stricter simulate(...) signature checks, better variables validation, and targeted repair prompts for empty outputs and malformed code.
 - Added more specific crash guidance in agent.py for Numba array-vs-scalar mistakes and wrong argument counts.
 - Created the baseline strategy.py commit used as the starting point for agent experiments.

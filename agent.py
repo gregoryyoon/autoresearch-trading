@@ -15,6 +15,8 @@ Usage:
     # Start llama-server first, then:
     python agent.py                          # defaults
     python agent.py --tag mar18              # custom branch tag
+    python agent.py --seed-file alt.py       # start from a strategy file
+    python agent.py --seed-commit abc1234    # start from strategy.py at a git revision
     python agent.py --quick                  # fast iteration (fewer retries)
     python agent.py --tickers BTC-USD ETH-USD XRP-USD ADA-USD  # crypto
     python agent.py --base-url http://host:8011/v1
@@ -55,7 +57,10 @@ MAX_CONTEXT_EXCHANGES = 2    # keep last N exchanges (lightweight, no code dupli
 TOP_K = 10                   # curated best/diverse experiments shown to LLM
 RECENT_K = 10                # recent experiments shown to LLM
 TEMPERATURE = 0.7
-REFERENCE_CODE_CHARS = 3500  # keep discarded-code references compact for 50K context
+REFERENCE_CODE_CHARS = 2200  # keep multiple reference strategies compact for 50K context
+EXPLORE_EVERY = 6            # exploration prompt cadence (0 disables)
+EXPLOIT_REFERENCE_K = 2      # alternative strategy code references on exploit turns
+EXPLORE_REFERENCE_K = 3      # alternative strategy code references on explore turns
 MAX_LLM_OUTPUT_TOKENS = 8192
 DEFAULT_TEST_DAYS = 90
 TRADING_DAYS_PER_YEAR = 252.0
@@ -231,8 +236,10 @@ Each response MUST contain:
 2. Exactly one fenced python code block with the COMPLETE strategy.py file.
 3. Exactly one final `DESCRIPTION: ...` line.
 
-Never output an empty response.  If you are unsure, output the current
-strategy with one small valid modification instead of placeholders.
+Never output an empty response.  If you are unsure, output a COMPLETE valid
+strategy instead of placeholders.  Small refinements are acceptable on
+exploitation turns, but on exploration turns prefer a materially different
+valid idea over a cosmetic tweak.
 
 Correct pattern — note how ALL values are passed to _execute as parameters:
 
@@ -300,6 +307,14 @@ class ExperimentResult:
     benchmark_name: str = ""       # e.g. HODL in crypto mode
     strategy_code: str = ""        # full strategy.py retained for prompt references
     family: str = ""               # coarse strategy family for diversity-aware prompts
+
+@dataclass(frozen=True)
+class InitialStrategy:
+    code: str
+    source_label: str
+    run_label: str
+    commit_message: str
+    fix_target: str
 
 @dataclass
 class AgentState:
@@ -419,24 +434,59 @@ class AgentState:
         recent = [r for r in recent_all if r.experiment_id not in exclude_ids]
         return recent[-limit:]
 
-    def _reference_discard(self) -> Optional[ExperimentResult]:
+    def _reference_strategies(self, limit: int = 3) -> list:
         """
-        Pick the most informative discarded strategy code for the prompt.
+        Pick informative alternative strategy code examples for the prompt.
 
-        Prefer a high-scoring discarded idea from a different family than the
-        current best, so the LLM sees one credible alternative branch.
+        Prefer strong results from families different from the current best.
+        Use at most one strategy per family on the first pass so the prompt gets
+        genuinely different code paths instead of minor variants.
         """
-        discards = [r for r in self.history if r.status == "discard" and r.strategy_code]
-        if not discards:
-            return None
+        if limit <= 0:
+            return []
 
-        discards.sort(key=lambda r: r.score, reverse=True)
         best_family = infer_strategy_family("current best", self.current_strategy)
-        for r in discards:
-            family = r.family or infer_strategy_family(r.description, r.strategy_code)
-            if family != best_family:
-                return r
-        return discards[0]
+        candidates = [r for r in self._non_crash_sorted()
+                      if r.strategy_code and r.commit != self.best_commit]
+        if not candidates:
+            return []
+
+        def family_of(r: ExperimentResult) -> str:
+            return r.family or infer_strategy_family(r.description, r.strategy_code)
+
+        # Prefer different families first, and slightly prefer keeps over discards
+        # when scores are close.
+        candidates.sort(
+            key=lambda r: (
+                family_of(r) != best_family,
+                r.status == "keep",
+                r.score,
+            ),
+            reverse=True,
+        )
+
+        chosen = []
+        chosen_ids = set()
+        seen_families = set()
+
+        for r in candidates:
+            family = family_of(r)
+            if family in seen_families:
+                continue
+            chosen.append(r)
+            chosen_ids.add(r.experiment_id)
+            seen_families.add(family)
+            if len(chosen) >= limit:
+                return chosen
+
+        for r in candidates:
+            if r.experiment_id in chosen_ids:
+                continue
+            chosen.append(r)
+            if len(chosen) >= limit:
+                break
+
+        return chosen
 
     def summary(self, top_k: int = 10, recent_k: int = 10) -> str:
         """
@@ -744,8 +794,14 @@ def call_gemini_native(system_prompt: str, user_prompt: str, model_id: str,
         return ""
 
 
+def is_exploration_turn(state: AgentState, explore_every: int = EXPLORE_EVERY) -> bool:
+    """Return True when the next prompt should favor exploration over hill-climbing."""
+    return explore_every > 0 and len(state.history) > 0 and len(state.history) % explore_every == 0
+
+
 def build_user_message(state: AgentState, top_k: int = TOP_K,
-                       recent_k: int = RECENT_K, extra: str = "") -> str:
+                       recent_k: int = RECENT_K, extra: str = "",
+                       exploration_mode: bool = False) -> str:
     """Build the user message for the next iteration."""
     parts = []
 
@@ -754,29 +810,59 @@ def build_user_message(state: AgentState, top_k: int = TOP_K,
                       "crossover as-is to establish the starting score.  "
                       "Output the current strategy.py unchanged.")
     else:
+        best_family = infer_strategy_family("current best", state.current_strategy)
         parts.append(state.summary(top_k=top_k, recent_k=recent_k))
-        parts.append(f"\nCurrent best strategy.py:\n```python\n{state.current_strategy}\n```")
+        reference_k = EXPLORE_REFERENCE_K if exploration_mode else EXPLOIT_REFERENCE_K
 
-        # Show the most informative discarded strategy, not just the latest one.
-        ref_discard = state._reference_discard()
-        if ref_discard and ref_discard.strategy_code:
-            discard_display = ref_discard.strategy_code
-            if len(discard_display) > REFERENCE_CODE_CHARS:
-                discard_display = discard_display[:REFERENCE_CODE_CHARS] + "\n# ... (truncated)"
+        if not exploration_mode:
+            parts.append(f"\nCurrent best strategy.py:\n```python\n{state.current_strategy}\n```")
+
+        reference_strategies = state._reference_strategies(limit=reference_k)
+        if reference_strategies:
+            intro = ("\nAlternative reference strategy.py files "
+                     "(diverse strong results; use as inspiration, not templates):")
+            parts.append(intro)
+            for idx, ref in enumerate(reference_strategies, start=1):
+                family = ref.family or infer_strategy_family(ref.description, ref.strategy_code)
+                code_display = ref.strategy_code
+                if len(code_display) > REFERENCE_CODE_CHARS:
+                    code_display = code_display[:REFERENCE_CODE_CHARS] + "\n# ... (truncated)"
+                parts.append(
+                    f"\nReference #{idx} [{ref.status}] score={ref.score:.4f} family={family}: "
+                    f"{ref.description}\n```python\n{code_display}\n```"
+                )
+
+        if exploration_mode:
             parts.append(
-                f"\nReference discarded strategy.py "
-                f"(strong result but not the current best; family={ref_discard.family or infer_strategy_family(ref_discard.description, ref_discard.strategy_code)}):"
-                f"\n```python\n{discard_display}\n```"
+                "\nPrompt mode: EXPLORATION\n"
+                f"- The current best family is `{best_family}`.\n"
+                "- Do NOT ask to see or reconstruct the current best code on this turn.\n"
+                "- Do NOT make a tiny tweak to the current leader just to stay safe.\n"
+                "- Prefer a materially different valid strategy family or a clearly different entry/exit structure.\n"
+                "- Use the alternative references to branch into other promising directions, not to clone them.\n"
+                "- If you feel uncertain, choose a complete valid strategy that is diverse, not a placeholder.\n\n"
+                "Propose the next strategy.  Think about:\n"
+                "- Which strategy families are under-explored relative to the current leader\n"
+                "- Which weak tickers suggest the current family is over-specialized\n"
+                "- Which alternative references point to different entry logic, regime filters, or exits\n"
+                "- How to increase diversity without exploding parameter count\n"
+                "Output the COMPLETE strategy.py in a python code block."
             )
-
-        parts.append("\nPropose the next strategy.  Think about:\n"
-                      "- Which strategy families keep winning, and which families are under-explored\n"
-                      "- What the median params tell you (hitting bounds? converging?)\n"
-                      "- What the strong near-misses got right, and what likely kept them below the best\n"
-                      "- What the representative failures reveal about overfitting, flatness, or volatility\n"
-                      "- Which tickers are weak in per-ticker breakdown\n"
-                      "- How to improve the current best without making it more fragile\n"
-                      "Output the COMPLETE strategy.py in a python code block.")
+        else:
+            parts.append(
+                "\nPrompt mode: EXPLOITATION\n"
+                f"- The current best family is `{best_family}`.\n"
+                "- Focus on improving the current best without making it more fragile.\n"
+                "- Meaningful refinements beat cosmetic rewrites.\n\n"
+                "Propose the next strategy.  Think about:\n"
+                "- Which strategy families keep winning, and which families are under-explored\n"
+                "- What the median params tell you (hitting bounds? converging?)\n"
+                "- What the strong near-misses got right, and what likely kept them below the best\n"
+                "- What the representative failures reveal about overfitting, flatness, or volatility\n"
+                "- Which tickers are weak in per-ticker breakdown\n"
+                "- How to improve the current best without making it more fragile\n"
+                "Output the COMPLETE strategy.py in a python code block."
+            )
 
     if extra:
         parts.append(f"\n{extra}")
@@ -1155,49 +1241,92 @@ def fix_strategy_code(code: str) -> str:
 
 
 def infer_strategy_family(description: str, code: str = "") -> str:
-    """Infer a coarse strategy family label from free text and code."""
+    """Infer a medium-grained structural family label from free text and code."""
     text = f"{description}\n{code[:4000]}".lower()
-
-    tags = []
 
     def has_any(patterns):
         return any(p in text for p in patterns)
 
-    if (has_any(["ema_np("]) and has_any(["sma_np("])) or has_any(["ema/sma", "ema_sma"]):
-        tags.append("ema-sma")
-    elif has_any(["hma_np("]) and has_any(["sma_np("]):
-        tags.append("hma-sma")
-    elif has_any(["supertrend_np(", "supertrend"]):
-        tags.append("supertrend")
-    elif has_any(["bollinger_np(", "bollinger_bandwidth_np(", "bollinger band"]):
-        tags.append("bollinger")
-    elif has_any(["donchian_np(", "donchian"]):
-        tags.append("donchian")
+    def detect_first(options):
+        for tag, patterns in options:
+            if has_any(patterns):
+                return tag
+        return ""
 
-    if has_any(["rsi_np(", "rsi "]):
-        tags.append("rsi")
-    if has_any(["adx_np(", " adx", "regime"]):
-        tags.append("adx")
-    if has_any(["atr_np(", "trail_mult", "trailing_stop_hit(", "trailing stop"]):
-        tags.append("atr-stop")
-    if has_any(["tier1_", "tier2_", "tier3_", "tiered"]):
-        tags.append("tiered-stop")
-    if has_any(["stop_loss", "stoploss", "hard stop", "hard-stop"]):
-        tags.append("hard-stop")
-    if has_any(["lockin", "lock-in", "profit lock", "lock-in floor"]):
-        tags.append("lockin")
-    if has_any(["pullback"]):
-        tags.append("pullback")
-    if has_any(["volume", "obv_np(", "cmf_np(", "vwap_np("]):
-        tags.append("volume")
-    if has_any(["roc_np(", "roc "]):
-        tags.append("roc")
-    if has_any(["cci_np(", "cci "]):
-        tags.append("cci")
-    if has_any(["trend filter", "filter_sma", "filter_period", "price-above-sma", "above long sma"]):
-        tags.append("trend-filter")
+    def detect_many(options, limit: int) -> list[str]:
+        found = []
+        for tag, patterns in options:
+            if has_any(patterns):
+                found.append(tag)
+            if len(found) >= limit:
+                break
+        return found
 
-    # Deduplicate while preserving order
+    if has_any(["regime switch", "regime-switch", "regime adaptive", "regime-adaptive"]):
+        archetype = "regime"
+    elif has_any(["breakout", "channel breakout", "new high", "range break"]):
+        archetype = "breakout"
+    elif has_any(["mean reversion", "mean-reversion", "reversion_score", "fade move"]):
+        archetype = "mean-rev"
+    elif has_any(["pullback", "dip-buy", "dip buying"]):
+        archetype = "pullback"
+    elif has_any(["trend-following", "trend following", "trend-continuation", "trend continuation"]):
+        archetype = "trend"
+    elif has_any(["momentum", "acceleration"]):
+        archetype = "momentum"
+    else:
+        archetype = detect_first([
+            ("regime", [" choppiness", "choppiness_index_np(", "trend_strength_np("]),
+            ("breakout", ["donchian_np(", "distance_from_high_np("]),
+            ("mean-rev", ["mean_reversion_score_np(", "bollinger_pctb_np(", "bollinger band mean"]),
+            ("trend", ["supertrend_np(", "ema crossover", "trend filter"]),
+            ("momentum", ["macd histogram", "macd_np(", "roc_np(", "trix_np(", "tsi_np("]),
+        ])
+
+    signal_tags = detect_many([
+        ("ema-sma", ["ema/sma", "ema_sma"]),
+        ("ema", ["ema_np(", " ema crossover", " fast ema", " slow ema"]),
+        ("sma", ["sma_np(", " simple moving average", " slow sma"]),
+        ("macd", ["macd_np(", "macd histogram", "macd crossover", "macd flip"]),
+        ("supertrend", ["supertrend_np(", "supertrend"]),
+        ("rsi", ["rsi_np(", "rsi oversold", "rsi overbought", "rsi "]),
+        ("bollinger", ["bollinger_np(", "bollinger_bandwidth_np(", "bollinger band"]),
+        ("donchian", ["donchian_np(", "donchian"]),
+        ("stoch", ["stochastic_np(", "stoch_rsi_np(", "stochastic", "stoch rsi"]),
+        ("roc", ["roc_np(", " roc "]),
+        ("ichimoku", ["ichimoku_np(", "ichimoku"]),
+        ("psar", ["psar_np(", "parabolic sar", " psar"]),
+        ("vwap", ["vwap_np(", "rolling_vwap_np(", "vwap"]),
+        ("cci", ["cci_np(", " cci "]),
+    ], limit=2)
+
+    filter_tag = detect_first([
+        ("adx", ["adx_np(", " adx", "adx filter", "trend strength"]),
+        ("vol-filter", ["volatility filter", "realized_volatility_np(", "historical_vol_np(", "ulcer_index_np("]),
+        ("chop-filter", ["choppiness_index_np(", "choppiness"]),
+        ("volume", ["volume confirmation", "volume filter", "obv_np(", "cmf_np(", "mfi_np(", "volume-based"]),
+    ])
+
+    exit_tag = detect_first([
+        ("dual-exit", ["dual exit", "dual-exit", "backup exit", "secondary exit"]),
+        ("natr-stop", ["natr trailing", "natr stop", "natr_np("]),
+        ("atr-stop", ["atr trailing", "atr stop", "atr_np(", "trailing_stop_hit("]),
+        ("pct-stop", ["trail_pct", "stop_pct", "percentage trailing", "fixed percentage stop"]),
+        ("profit-target", ["profit target", "take profit", "take-profit", "fixed % target"]),
+        ("trend-exit", ["trend destruction", "trend reversal", "bearish crossover", "supertrend flip exit", "macd flip exit"]),
+        ("partial-size", ["buy_fraction(", "sell_fraction(", "half position", "partial position", "position sizing"]),
+    ])
+
+    tags = []
+    if archetype:
+        tags.append(archetype)
+    tags.extend(signal_tags)
+    if filter_tag:
+        tags.append(filter_tag)
+    if exit_tag:
+        tags.append(exit_tag)
+
+    # Deduplicate while preserving order.
     seen = set()
     unique = []
     for tag in tags:
@@ -1207,7 +1336,7 @@ def infer_strategy_family(description: str, code: str = "") -> str:
 
     if not unique:
         return "misc"
-    return "+".join(unique[:4])
+    return "+".join(unique[:5])
 
 
 def write_strategy(code: str):
@@ -1223,6 +1352,10 @@ def read_strategy() -> str:
 
 class GitError(RuntimeError):
     """Raised when git bookkeeping cannot be completed safely."""
+
+
+class SeedError(RuntimeError):
+    """Raised when the chosen starting strategy cannot be resolved safely."""
 
 
 def _run_git(*args) -> subprocess.CompletedProcess:
@@ -1338,6 +1471,60 @@ def git_setup_branch(tag: str):
         print(f"  Creating branch autoresearch/{tag}...")
         _run_git_checked("checkout", "-b", f"autoresearch/{tag}",
                          action=f"Create branch autoresearch/{tag}")
+
+
+def git_read_file(revision: str, path: str) -> str:
+    """Read a tracked file from a git revision."""
+    result = _run_git_checked("show", f"{revision}:{path}",
+                              action=f"Read {path} from git revision {revision}")
+    content = result.stdout
+    if not content.strip():
+        raise GitError(f"Read {path} from git revision {revision} returned empty content")
+    return content
+
+
+def load_initial_strategy(args) -> InitialStrategy:
+    """Resolve the starting strategy from baseline, a file, or a git revision."""
+    if args.seed_file:
+        seed_path = Path(args.seed_file).expanduser()
+        if not seed_path.is_absolute():
+            seed_path = (Path.cwd() / seed_path).resolve()
+        else:
+            seed_path = seed_path.resolve()
+        if not seed_path.is_file():
+            raise SeedError(f"Seed file not found: {seed_path}")
+        code = seed_path.read_text()
+        if not code.strip():
+            raise SeedError(f"Seed file is empty: {seed_path}")
+        return InitialStrategy(
+            code=code,
+            source_label=str(seed_path),
+            run_label=f"seed ({seed_path.name})",
+            commit_message=f"seed from file {seed_path.name}",
+            fix_target=str(seed_path),
+        )
+
+    if args.seed_commit:
+        code = git_read_file(args.seed_commit, STRATEGY_FILE)
+        return InitialStrategy(
+            code=code,
+            source_label=f"{args.seed_commit}:{STRATEGY_FILE}",
+            run_label=f"seed ({args.seed_commit})",
+            commit_message=f"seed from commit {args.seed_commit}",
+            fix_target=f"{args.seed_commit}:{STRATEGY_FILE}",
+        )
+
+    base_path = PROJECT_DIR / BASE_STRATEGY_FILE
+    code = base_path.read_text()
+    if not code.strip():
+        raise SeedError(f"{BASE_STRATEGY_FILE} is empty")
+    return InitialStrategy(
+        code=code,
+        source_label=BASE_STRATEGY_FILE,
+        run_label="baseline",
+        commit_message="baseline",
+        fix_target=BASE_STRATEGY_FILE,
+    )
 
 
 def preflight_check() -> Optional[str]:
@@ -1676,30 +1863,26 @@ def run_agent(args):
                                   else "gemini-3.1-pro")
         print(f"Connected to native {backend} client: {model_id} (temp={temperature})")
 
-    # --- Always start from a clean state ---
-    # Copy base_strategy.py → strategy.py so we have a known-good baseline,
-    # regardless of what a previous (possibly killed) agent run left behind.
-    import shutil
-    base_path = PROJECT_DIR / BASE_STRATEGY_FILE
-    strat_path = PROJECT_DIR / STRATEGY_FILE
-    shutil.copy2(base_path, strat_path)
-    print(f"  Copied {BASE_STRATEGY_FILE} → {STRATEGY_FILE}")
-
-    # Preflight check the baseline
-    print(f"  Preflight check on baseline...")
-    pf_err = preflight_check()
-    if pf_err is not None:
-        print(f"  [ERROR] base_strategy.py fails preflight:")
-        for line in pf_err.strip().split('\n')[-15:]:
-            print(f"    {line}")
-        print(f"\n  Fix {BASE_STRATEGY_FILE} and re-run.")
-        sys.exit(1)
-    print(f"  Preflight OK")
-
     # --- Setup git ---
     git_ensure_repo()
     if args.tag:
         git_setup_branch(args.tag)
+
+    # --- Seed the starting strategy deterministically on the chosen branch ---
+    initial_strategy = load_initial_strategy(args)
+    write_strategy(initial_strategy.code)
+    print(f"  Seeded {STRATEGY_FILE} from {initial_strategy.source_label}")
+
+    print(f"  Preflight check on initial strategy...")
+    pf_err = preflight_check()
+    if pf_err is not None:
+        print(f"  [ERROR] Initial strategy fails preflight:")
+        for line in pf_err.strip().split('\n')[-15:]:
+            print(f"    {line}")
+        print(f"\n  Fix {initial_strategy.fix_target} and re-run.")
+        sys.exit(1)
+    print(f"  Preflight OK")
+
     init_results_tsv()
 
     market_mode = resolve_market_mode(args.tickers, args.market_mode)
@@ -1730,7 +1913,7 @@ def run_agent(args):
     print("=" * 60)
 
     # --- Experiment loop ---
-    is_baseline = True
+    is_initial_strategy = True
 
     while True:
         state.experiment_count += 1
@@ -1740,25 +1923,32 @@ def run_agent(args):
               f"{datetime.now().strftime('%H:%M:%S')}")
         print(f"{'='*60}")
 
-        if is_baseline:
-            # --- Baseline: run the known-good strategy (already preflighted) ---
-            is_baseline = False
-            this_is_baseline = True
+        if is_initial_strategy:
+            # --- Initial seed: run the chosen starting strategy unchanged ---
+            is_initial_strategy = False
+            this_is_initial_strategy = True
             code = read_strategy()
             meta = extract_strategy_meta(code)
-            description = "baseline"
-            user_msg = "(baseline run)"
+            description = initial_strategy.run_label
+            user_msg = "(initial seed run)"
             meta_str = format_strategy_meta(meta)
-            print(f"  Running baseline strategy...")
+            if initial_strategy.commit_message == "baseline":
+                print(f"  Running baseline strategy...")
+            else:
+                print(f"  Running seed strategy from {initial_strategy.source_label}...")
             if meta_str:
                 print(f"  Variables: {meta_str}")
-            commit = git_commit("baseline")
+            commit = git_commit(initial_strategy.commit_message)
 
         else:
-            this_is_baseline = False
+            this_is_initial_strategy = False
             # --- Step 1: Ask LLM for next strategy ---
+            exploration_mode = is_exploration_turn(state, args.explore_every)
+            mode_label = "EXPLORATION" if exploration_mode else "EXPLOITATION"
+            print(f"  Prompt mode: {mode_label}")
             user_msg = build_user_message(
-                state, top_k=args.top_k, recent_k=args.recent_k, extra=market_context)
+                state, top_k=args.top_k, recent_k=args.recent_k,
+                extra=market_context, exploration_mode=exploration_mode)
             messages = conv.messages(user_msg)
 
             print("  Asking LLM for next strategy...")
@@ -1915,9 +2105,9 @@ def run_agent(args):
             if crash_count >= MAX_CRASH_RETRIES:
                 break
 
-            # For baseline runs, don't ask LLM to fix — just retry once
+            # For the initial seed, don't ask LLM to fix — just retry once
             # (crash may be transient, e.g. numba cache issue)
-            if this_is_baseline:
+            if this_is_initial_strategy:
                 continue
 
             # Ask LLM to fix the crash
@@ -1950,10 +2140,10 @@ def run_agent(args):
             log_result(result)
             state.history.append(result)
 
-            if this_is_baseline:
-                print(f"\n  BASELINE CRASHED — cannot continue.")
+            if this_is_initial_strategy:
+                print(f"\n  INITIAL STRATEGY CRASHED — cannot continue.")
                 print(f"  Check the error above and inspect: {PROJECT_DIR / RUN_LOG}")
-                print(f"  Fix {BASE_STRATEGY_FILE} and re-run agent.py.")
+                print(f"  Fix {initial_strategy.fix_target} and re-run agent.py.")
                 sys.exit(1)
             else:
                 git_revert()
@@ -1989,7 +2179,7 @@ def run_agent(args):
             per_ticker_alpha_dict, test_days=DEFAULT_TEST_DAYS, bars_per_year=bars_per_year)
         trade_counts_str = format_trade_counts(per_ticker_trades)
         flat_result = is_flat_result(run_result)
-        reject_flat = flat_result and not this_is_baseline
+        reject_flat = flat_result and not this_is_initial_strategy
         result_description = (description + " (flat/no-trade result rejected)"
                               if reject_flat else description)
 
@@ -2080,6 +2270,11 @@ def main():
                         help="Model id. Names containing 'claude' or 'gemini' or 'MiniMax' use native SDKs on local/default base URLs; otherwise use the OpenAI-compatible API")
     parser.add_argument("--tag", default=None,
                         help="Branch tag (e.g. mar18). Creates autoresearch/<tag>")
+    seed_group = parser.add_mutually_exclusive_group()
+    seed_group.add_argument("--seed-file", default=None,
+                            help="Path to a strategy.py file to score first instead of base_strategy.py")
+    seed_group.add_argument("--seed-commit", default=None,
+                            help="Git revision whose strategy.py should be scored first instead of base_strategy.py")
     parser.add_argument("--quick", action="store_true",
                         help="Fast iteration: 8 retries, 250 evals (~15s per run)")
     parser.add_argument("--medium", action="store_true",
@@ -2097,6 +2292,8 @@ def main():
                         help="Max curated best/diverse experiments shown to LLM (default: 10)")
     parser.add_argument("--recent-k", type=int, default=RECENT_K,
                         help="Recent experiments shown to LLM (default: 10)")
+    parser.add_argument("--explore-every", type=int, default=EXPLORE_EVERY,
+                        help="Run an exploration prompt every N completed experiments (0 disables; default: 6)")
     args = parser.parse_args()
 
     # Override PROJECT_DIR if specified
@@ -2109,6 +2306,9 @@ def main():
     except KeyboardInterrupt:
         print("\n\nStopped by user.  Results saved in results.tsv.")
         sys.exit(0)
+    except SeedError as e:
+        print(f"\n[ERROR] {e}")
+        sys.exit(1)
     except GitError as e:
         print(f"\n[ERROR] {e}")
         sys.exit(1)
