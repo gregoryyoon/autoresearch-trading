@@ -34,7 +34,6 @@ import time
 import math
 import subprocess
 import argparse
-import textwrap
 from datetime import datetime
 from pathlib import Path
 from dataclasses import dataclass, field
@@ -70,218 +69,39 @@ CRYPTO_DAYS_PER_YEAR = 365.0
 PROJECT_DIR: Path = Path(__file__).resolve().parent
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  System prompt — compact version of program_trade.md
+#  System prompt
 # ═══════════════════════════════════════════════════════════════════════════
 
-SYSTEM_PROMPT = r"""You are an autonomous trading strategy researcher.
+SYSTEM_PROMPT_FILE = "program_trade.md"
+SYSTEM_PROMPT_BEGIN = "<!-- AUTORESEARCH_AGENT_PROMPT_BEGIN -->"
+SYSTEM_PROMPT_END = "<!-- AUTORESEARCH_AGENT_PROMPT_END -->"
 
-## Your task
-Design trading strategies that beat buy-and-hold.  Each iteration you produce
-a complete `strategy.py` file.  The framework handles parameter optimisation
-(BiteOpt) and walk-forward validation.  You focus on strategy STRUCTURE:
-which indicators, what buy/sell logic, how to size positions.
+class PromptError(RuntimeError):
+    """Raised when the canonical system prompt cannot be loaded."""
 
-## The metric: SCORE
-  score = mean(log(fold_factors)) - 0.5 * std(log(fold_factors))
-  score = 0  → broke even (capital preservation)
-  score > 0  → profitable with good risk-adjusted growth
-  score < 0  → losing money and/or too volatile
 
-It decomposes into growth (average log-return) and volatility (consistency).
+def load_system_prompt(project_dir: Optional[Path] = None) -> str:
+    """Load the compact agent prompt from the marked section in program_trade.md."""
+    base_dir = project_dir or PROJECT_DIR
+    prompt_path = base_dir / SYSTEM_PROMPT_FILE
+    try:
+        text = prompt_path.read_text(encoding="utf-8")
+    except OSError as e:
+        raise PromptError(f"Could not read {prompt_path}: {e}") from e
 
-## strategy.py contract
+    start = text.find(SYSTEM_PROMPT_BEGIN)
+    end = text.find(SYSTEM_PROMPT_END)
+    if start == -1 or end == -1 or end <= start:
+        raise PromptError(
+            f"Could not find valid prompt markers in {prompt_path}. "
+            f"Expected {SYSTEM_PROMPT_BEGIN} ... {SYSTEM_PROMPT_END}"
+        )
 
-```python
-import numpy as np
-from numba import njit
-from strategy_helpers import *  # all helper functions available
+    prompt = text[start + len(SYSTEM_PROMPT_BEGIN):end].strip()
+    if not prompt:
+        raise PromptError(f"Prompt section in {prompt_path} is empty")
 
-def get_strategy() -> dict:
-    return dict(
-        name="my_strategy",
-        variables=["param1", "param2", ...],      # 4-15 parameters
-        bounds=([lo1, lo2, ...], [hi1, hi2, ...]), # optimiser bounds
-        simulate=simulate,
-    )
-
-def simulate(close, high, low, volume, x):
-    # 1. Compute indicators (regular python/numpy)
-    ema = ema_np(close, int(x[0]))
-    rsi = rsi_np(close, int(x[1]))
-    # 2. Call @njit trading loop
-    return _execute(close, 1_000_000.0, ema, rsi, int(x[2]), ...)
-
-@njit(fastmath=True)
-def _execute(close, start_cash, ema, rsi, wait_buy, ...):
-    cash = start_cash
-    num_coins = 0
-    last_trade = 0
-    num_trades = 0
-    for i in range(len(close)):
-        # ... trading logic using precomputed arrays ...
-        pass
-    cash, num_coins = sell_all(cash, num_coins, close[-1])  # force-sell
-    return cash / start_cash, num_trades
-```
-
-## Available indicators (from strategy_helpers, all @njit)
-
-TRADING PRIMITIVES (exact signatures — do NOT change argument order or count):
-  cash, num_coins = buy_all(cash, num_coins, price)
-  cash, num_coins = sell_all(cash, num_coins, price)
-  cash, num_coins = buy_fraction(cash, num_coins, price, fraction)  # fraction 0..1
-  cash, num_coins = sell_fraction(cash, num_coins, price, fraction) # fraction 0..1
-  is_hit = trailing_stop_hit(price, peak, stop_pct)  # True if price <= peak*(1-stop_pct)
-  value = portfolio_value(cash, num_coins, price)
-
-  Trailing stop example in _execute:
-    peak = price  # track highest price since entry
-    ...
-    if close[i] > peak: peak = close[i]
-    if trailing_stop_hit(close[i], peak, stop_pct):  # 3 args only!
-        cash, num_coins = sell_all(cash, num_coins, close[i])
-
-MOVING AVERAGES: ema_np(close,period), sma_np(close,period),
-  wma_np(close,period), dema_np(close,period), tema_np(close,period),
-  hma_np(close,period),
-  kama_np(close,period,fast_sc,slow_sc), vwma_np(close,volume,period),
-  zlema_np(close,period), frama_np(close,period)
-MOMENTUM: rsi_np(close,period), macd_np(close,fast,slow,signal)→(ml,sl,hist),
-  stochastic_np(high,low,close,k,d)→(k,d), williams_r_np(high,low,close,period),
-  cci_np(high,low,close,period), roc_np(close,period), momentum_np(close,period),
-  mfi_np(high,low,close,vol,period), tsi_np(close,long,short),
-  awesome_oscillator_np(high,low,fast,slow), cmo_np(close,period),
-  dpo_np(close,period), stoch_rsi_np(close,rsi_p,stoch_p,k_sm,d_sm)→(k,d)
-TREND: adx_np(high,low,close,period)→(adx,pdi,mdi), aroon_np(high,low,period)→(up,dn,osc),
-  supertrend_np(high,low,close,period,mult)→(st,direction),
-  psar_np(high,low,af_start,af_step,af_max)→(sar,direction),
-  trix_np(close,period), vortex_np(high,low,close,period)→(vip,vim),
-  mass_index_np(high,low,ema_p,sum_p), linreg_slope_np(data,period),
-  linreg_np(data,period), linreg_r2_np(data,period), true_range_np(high,low,close)
-VOLATILITY: bollinger_np(close,period,nstd)→(mid,upper,lower),
-  bollinger_bandwidth_np(close,period,nstd), bollinger_pctb_np(close,period,nstd),
-  atr_np(high,low,close,period), natr_np(high,low,close,period),
-  keltner_np(high,low,close,ema_p,atr_p,mult)→(mid,up,lo),
-  historical_vol_np(close,period), chaikin_vol_np(high,low,ema_p,roc_p),
-  ulcer_index_np(close,period)
-VOLUME: obv_np(close,vol), cmf_np(high,low,close,vol,period),
-  force_index_np(close,vol,period), ad_line_np(high,low,close,vol),
-  vwap_np(high,low,close,vol), rolling_vwap_np(high,low,close,vol,period),
-  vwap_deviation_np(high,low,close,vol,period),
-  volume_oscillator_np(vol,fast,slow), volume_ratio_np(vol,period)
-CHANNELS: donchian_np(high,low,period)→(up,lo,mid),
-  pivot_points_np(high,low,close)→(p,r1,s1,r2,s2,r3,s3),
-  ichimoku_np(high,low,close,tenkan,kijun,senkou_b)→(ts,ks,sa,sb,chikou)
-UTILITY: log_return_np(close), pct_change_np(data,period),
-  rolling_std/mean/sum/max/min/median_np(data,period),
-  zscore_np(data,period), percentile_rank_np(data,period),
-  drawdown_np(close), drawdown_duration_np(close),
-  normalize_np(data,period), crossover_np(a,b), crossunder_np(a,b),
-  slope_np(data), diff_np(data,period), clamp_np(data,lo,hi),
-  lag_np(data,period), sign_np(data), abs_np(data),
-  highest_bars_ago_np(data,period), lowest_bars_ago_np(data,period),
-  bars_since_np(condition), above_np(a,threshold), below_np(a,threshold),
-  between_np(a,lo,hi), ema_cross_signal_np(close,fast,slow),
-  decay_linear_np(data,period), decay_exp_np(data,halflife),
-  mean_reversion_score_np(close,period), trend_strength_np(close,period),
-  choppiness_index_np(high,low,close,period),
-  realized_volatility_np(close,period,bars_per_year),
-  distance_from_high_np(close,period), distance_from_low_np(close,period)
-
-## Critical rules
-- ALWAYS use `from strategy_helpers import *` — never selective imports.
-  This prevents "cannot import name" and "name not defined" errors.
-  All helper functions become available everywhere, including inside @njit.
-- `simulate` must have the exact signature `simulate(close, high, low, volume, x)`.
-- `variables` must be a plain Python list of quoted parameter names, e.g.
-  `["ema_fast", "ema_slow", "adx_period"]`.  No stray quotes, no comments
-  inside the strings, no placeholders.
-- ALL variables used inside @njit _execute MUST be passed as parameters.
-  Variables defined in simulate() are NOT visible inside _execute().
-  WRONG: defining `rsi_period = int(x[2])` in simulate then using `rsi_period` in _execute
-  RIGHT: pass it as a parameter: `_execute(close, cash, ema, rsi, int(x[2]), ...)`
-- Keep the `_execute(...)` call and the `_execute(...)` definition in the same
-  order with the same argument count.
-- Always use max(int(x[i]), 1) for period parameters (0 → division by zero).
-- Handle NaN: first period-1 values of any indicator are NaN.  Skip them.
-- Keep indicator periods < 200 (training window is 365 days).
-- All functions called inside @njit must be @njit (from strategy_helpers).
-- Inside @njit, `if` / `and` / `or` conditions must use scalars, not whole
-  arrays.  WRONG: `if adx > 25:`  RIGHT: `if adx[i] > 25:`
-- NEVER use print() inside simulate() or _execute() — it runs 10000+ times.
-- Always force-sell at the end of _execute.
-- 4–12 decision variables is ideal.  More = harder to optimise, overfitting risk.
-- Fix runtime errors at the root cause.  NEVER mask them with broad try/except,
-  NEVER return a constant `(1.0, 0)` fallback, and NEVER disable trading just
-  to avoid a crash.
-
-## What works
-- Regime detection (ADX/trend_strength to switch trend vs mean-reversion)
-- Confirmation signals (fast signal + slower filter)
-- Volatility filters (don't trade during extremes or trade after squeezes)
-- Trailing stops (ATR-based exits let winners run)
-- Asymmetric timing (different buy/sell cooldowns)
-- For crypto specifically: breakout/trend-continuation, wide ATR/NATR-based
-  exits, longer holding periods, and regime filters are often more robust than
-  stock-style short-horizon mean reversion.
-
-## What fails
-- Too many indicators (8+ usually overfits)
-- Very short periods (<5 days) — captures noise
-- Too many AND conditions — too few trades, coincidental fits
-
-## Your output format
-Each response MUST contain:
-1. Optional brief reasoning (1-4 short lines max).
-2. Exactly one fenced python code block with the COMPLETE strategy.py file.
-3. Exactly one final `DESCRIPTION: ...` line.
-
-Never output an empty response.  If you are unsure, output a COMPLETE valid
-strategy instead of placeholders.  Small refinements are acceptable on
-exploitation turns, but on exploration turns prefer a materially different
-valid idea over a cosmetic tweak.
-
-Correct pattern — note how ALL values are passed to _execute as parameters:
-
-```python
-import numpy as np
-from numba import njit
-from strategy_helpers import *
-
-def get_strategy():
-    return dict(
-        name="ema_rsi_v1",
-        variables=["ema_fast", "ema_slow", "rsi_period", "rsi_oversold", "wait_buy"],
-        bounds=([5, 20, 5, 15, 5], [30, 80, 30, 40, 100]),
-        simulate=simulate,
-    )
-
-def simulate(close, high, low, volume, x):
-    ema_f = ema_np(close, max(int(x[0]), 1))
-    ema_s = ema_np(close, max(int(x[1]), 1))
-    rsi = rsi_np(close, max(int(x[2]), 1))
-    # ALL scalars and arrays go as parameters to _execute:
-    return _execute(close, 1_000_000.0, ema_f, ema_s, rsi,
-                    int(x[3]), int(x[4]))
-
-@njit(fastmath=True)
-def _execute(close, start_cash, ema_f, ema_s, rsi, rsi_oversold, wait_buy):
-    cash = start_cash; num_coins = 0; last_trade = 0; num_trades = 0
-    for i in range(len(close)):
-        if np.isnan(ema_f[i]) or np.isnan(ema_s[i]) or np.isnan(rsi[i]):
-            continue
-        if num_coins == 0 and ema_f[i] > ema_s[i] and rsi[i] < rsi_oversold and i > last_trade + wait_buy:
-            cash, num_coins = buy_all(cash, num_coins, close[i])
-            last_trade = i; num_trades += 1
-        elif num_coins > 0 and ema_f[i] < ema_s[i]:
-            cash, num_coins = sell_all(cash, num_coins, close[i])
-            last_trade = i; num_trades += 1
-    cash, num_coins = sell_all(cash, num_coins, close[-1])
-    return cash / start_cash, num_trades
-```
-
-DESCRIPTION: EMA crossover with RSI oversold filter
-"""
+    return prompt
 
 # ═══════════════════════════════════════════════════════════════════════════
 #  Data classes
@@ -2060,7 +1880,7 @@ def run_agent(args):
     bars_per_year = infer_bars_per_year(market_mode)
     state = AgentState(bars_per_year=bars_per_year)
     state.current_strategy = read_strategy()
-    conv = Conversation(SYSTEM_PROMPT)
+    conv = Conversation(load_system_prompt())
     market_context = build_market_context(market_mode)
 
     # Build extra args for trading.py
@@ -2494,6 +2314,9 @@ def main():
         print(f"\n[ERROR] {e}")
         sys.exit(1)
     except GitError as e:
+        print(f"\n[ERROR] {e}")
+        sys.exit(1)
+    except PromptError as e:
         print(f"\n[ERROR] {e}")
         sys.exit(1)
 

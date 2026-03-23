@@ -742,6 +742,13 @@ of work done at numpy/numba speed.
 
 ## Recent Updates:
 
+- Made `program_trade.md` the single source of truth for the agent system prompt. `agent.py` now loads only the marked compact prompt block at runtime and fails fast if the markers are missing or invalid, instead of silently falling back to a stale in-code copy.
+- Synced `program_trade.md` with the actual autonomous runner behavior in `agent.py`, including git auto-init / branch setup, seed selection, quick/medium modes, preflight checks, crash retries, flat/no-trade rejection, and the real keep/revert loop.
+- Added adaptive search steering to `agent.py`: the agent now tracks recent family dominance, experiments since last KEEP, flat/no-trade streaks, crash streaks, and the common “positive growth but still negative SCORE” failure mode.
+- Added forced exploration when the search plateaus inside one dominant strategy family, so the agent can break out of local minima instead of waiting only for the fixed `--explore-every` cadence.
+- Added model-specific prompt steering for Gemini and MiniMax. Gemini is now pushed away from endless micro-refinements of one family, while MiniMax is pushed away from over-constrained filter stacking and flat “safer” variants.
+- Improved prompt feedback around volatility and benchmark-relative failure: when recent runs have decent raw growth but still poor SCORE, the prompt now explicitly tells the model that volatility and/or HODL-relative lag is the bottleneck.
+- Documented updated search-tuning guidance from recent crypto runs: Qwen works best with moderate temperature and somewhat larger prompt memory, while Gemini Flash and MiniMax 2.7 benefit from slightly hotter sampling but smaller `--top-k` / `--recent-k` to reduce family lock-in.
 - Added explicit seed restarts to agent.py with `--seed-file` and `--seed-commit`, so new runs can start from a chosen strategy instead of always from `base_strategy.py`.
 - Added scheduled exploration turns to agent.py with `--explore-every`, where the prompt hides the current best code and asks for a materially different valid idea instead of pure hill-climbing.
 - Expanded prompt references from a single discarded example to 2-3 alternative strategy files per turn, with more reference slots on exploration turns to improve structural diversity.
