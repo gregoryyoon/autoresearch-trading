@@ -30,6 +30,10 @@
 #      simulate() where needed (e.g., window sizes).
 #   8. Keep variable count reasonable (4–15). More variables = harder to
 #      optimise, more prone to overfit.
+#   9. Prefer plain @njit for trading loops that rely on np.isnan/np.isfinite
+#      warmup guards. Avoid fastmath=True there because it can change NaN logic.
+#  10. Parameters named *_pct are percent points (8 means 8%), so convert to
+#      fractions with * 0.01 before comparing to returns or stop fractions.
 
 import numpy as np
 from numba import njit
@@ -59,8 +63,8 @@ def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
     This function is called ~10k+ times per optimisation window, so keep
     indicator computation efficient (numpy only, no pandas).
     """
-    ema_period = int(x[0])
-    sma_period = int(x[1])
+    ema_period = max(int(x[0]), 1)
+    sma_period = max(int(x[1]), 1)
     ema = ema_np(close, ema_period)
     sma = sma_np(close, sma_period)
     return _execute(close, 1_000_000.0, ema, sma, int(x[2]), int(x[3]))
@@ -69,7 +73,7 @@ def simulate(close: np.ndarray, high: np.ndarray, low: np.ndarray,
 #  Numba-compiled trading loop (the hot path)
 # ---------------------------------------------------------------------------
 
-@njit(fastmath=True)
+@njit
 def _execute(close, start_cash, ema, sma, wait_buy, wait_sell):
     cash = start_cash
     num_coins = 0

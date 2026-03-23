@@ -887,6 +887,16 @@ def infer_bars_per_year(market_mode: str) -> float:
 
 def build_market_context(market_mode: str) -> str:
     """Optional market-specific prompt guidance."""
+    if market_mode == "equity":
+        return (
+            "Market context:\n"
+            "- Equity mode scores fold-by-fold return versus cash, not alpha versus HODL.\n"
+            "- In persistent bull trends, long time spent in cash has a high opportunity cost.\n"
+            "- Favor simple, durable exposure with timely re-entry over heavily gated 'safe' logic.\n"
+            "- Avoid stacking many confirmation filters that create flat/no-trade behavior.\n"
+            "- Exits should reduce major drawdowns without causing the strategy to miss every recovery leg.\n"
+            "- A flat/no-trade strategy is not a win. Fix crashes at the root cause instead of suppressing trades."
+        )
     if market_mode != "crypto":
         return ""
     return (

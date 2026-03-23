@@ -742,6 +742,8 @@ of work done at numpy/numba speed.
 
 ## Recent Updates:
 
+- Added equity-specific prompt guidance in `agent.py`, so stock-mode runs now remind the model that scoring is versus cash, long cash periods can be costly in bull trends, and over-filtered flat/no-trade strategies are not acceptable.
+- Updated the shipped strategy template and canonical prompt after investigating strange crypto walk-forward numbers: the docs now avoid teaching `@njit(fastmath=True)` in NaN-gated trading loops, clarify that `*_pct` variables are percent points that must be scaled by `0.01`, and document the root cause of bogus `alpha=1.000` / `score=0.0000` style outputs.
 - Made `program_trade.md` the single source of truth for the agent system prompt. `agent.py` now loads only the marked compact prompt block at runtime and fails fast if the markers are missing or invalid, instead of silently falling back to a stale in-code copy.
 - Synced `program_trade.md` with the actual autonomous runner behavior in `agent.py`, including git auto-init / branch setup, seed selection, quick/medium modes, preflight checks, crash retries, flat/no-trade rejection, and the real keep/revert loop.
 - Added adaptive search steering to `agent.py`: the agent now tracks recent family dominance, experiments since last KEEP, flat/no-trade streaks, crash streaks, and the common “positive growth but still negative SCORE” failure mode.

@@ -46,12 +46,12 @@ def get_strategy() -> dict:
 
 def simulate(close, high, low, volume, x):
     # 1. Compute indicators (regular python/numpy)
-    ema = ema_np(close, int(x[0]))
-    rsi = rsi_np(close, int(x[1]))
+    ema = ema_np(close, max(int(x[0]), 1))
+    rsi = rsi_np(close, max(int(x[1]), 1))
     # 2. Call @njit trading loop
     return _execute(close, 1_000_000.0, ema, rsi, int(x[2]), ...)
 
-@njit(fastmath=True)
+@njit
 def _execute(close, start_cash, ema, rsi, wait_buy, ...):
     cash = start_cash
     num_coins = 0
@@ -144,10 +144,16 @@ UTILITY: log_return_np(close), pct_change_np(data,period),
   order with the same argument count.
 - Always use max(int(x[i]), 1) for period parameters (0 → division by zero).
 - Handle NaN: first period-1 values of any indicator are NaN.  Skip them.
+- Prefer plain `@njit` for trading loops that rely on `np.isnan(...)` or
+  `np.isfinite(...)` guards.  Do NOT use `fastmath=True` in those loops because
+  it can invalidate NaN-based warmup skips.
 - Keep indicator periods < 200 (training window is 365 days).
 - All functions called inside @njit must be @njit (from strategy_helpers).
 - Inside @njit, `if` / `and` / `or` conditions must use scalars, not whole
   arrays.  WRONG: `if adx > 25:`  RIGHT: `if adx[i] > 25:`
+- Treat parameters named `*_pct` or described as percentages as percent points.
+  Example: `8` means `8%`, so compare with `0.08` via `value * 0.01` when
+  matching fractional returns or stop distances.
 - NEVER use print() inside simulate() or _execute() — it runs 10000+ times.
 - Always force-sell at the end of _execute.
 - 4–12 decision variables is ideal.  More = harder to optimise, overfitting risk.
@@ -204,7 +210,7 @@ def simulate(close, high, low, volume, x):
     return _execute(close, 1_000_000.0, ema_f, ema_s, rsi,
                     int(x[3]), int(x[4]))
 
-@njit(fastmath=True)
+@njit
 def _execute(close, start_cash, ema_f, ema_s, rsi, rsi_oversold, wait_buy):
     cash = start_cash; num_coins = 0; last_trade = 0; num_trades = 0
     for i in range(len(close)):
@@ -518,6 +524,8 @@ If **growth is near zero and volatility is low**:
 - All functions called inside `@njit` must also be `@njit`.
 - No Python objects, strings, lists, dicts inside `@njit`.
 - Use `np.nan` checks: `if np.isnan(x): continue`.
+- Prefer plain `@njit` for trading loops that rely on NaN guards.
+  Avoid `fastmath=True` there because it can change NaN-sensitive logic.
 - Cast float parameters to int where needed: `period = int(x[0])`.
 - Ensure period parameters are ≥ 1: `period = max(int(x[0]), 1)`.
 - All arrays must be float64 numpy arrays.
@@ -531,6 +539,9 @@ If **growth is near zero and volatility is low**:
 - **Indicator period > window length**.  If your training window is
   365 days and you use SMA(200), only 165 days have valid signals.
   With SMA(300), almost nothing is valid.
+- **Percent scaling mismatch**.  If a variable is named `*_pct` and bounded
+  like `6..14`, that usually means percent points, so convert with `* 0.01`
+  before comparing to fractional returns or stop fractions.
 - **Returning negative factors**.  If your strategy can lose more than
   100% (it cannot with buy_all/sell_all), clamp the return.
 - **Not force-selling at the end**.  Always `sell_all` at the last bar
