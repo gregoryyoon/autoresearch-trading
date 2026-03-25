@@ -1,4 +1,4 @@
-![](https://github.com/dietmarwo/fast-cma-es/blob/master/tutorials/img/logo.gif)
+![](img/logo.png)
 
 # autoresearch-trading
 
