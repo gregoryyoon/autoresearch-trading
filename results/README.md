@@ -40,9 +40,46 @@ Existing research on AI in finance is broad and growing, which is one reason thi
 
 ## Strategy Notes
 
+### `strategyMinimax27.py`
+
+This equity strategy found by MiniMax-M2.7 is best understood as a
+volatility-aware trend-continuation system, not just as a more aggressive copy
+of `strategyFlashEq21.py`.
+
+- `ADX` acts as the trend gate, keeping entries inside already directional markets
+- `MFI` defines a pullback zone, so the strategy buys pauses inside strength rather than chasing every breakout
+- `RSI` requires some recovery before entry, which turns the setup into a "pullback, then rebound" trigger
+- `ATR` drives both the initial risk control and a Chandelier-style trailing stop
+- partial profit-taking locks in part of the move while preserving upside exposure
+- an additional ATR/ADX deterioration rule exits trends that have gone stale
+
+In practice, this gives the strategy a very specific personality: it wants to
+buy orderly pullbacks inside strong uptrends, then hold with relatively patient
+exit logic so that multi-leg trends can compound. Compared with the earlier
+equity winners, it appears less interested in constantly flipping in and out and
+more interested in catching the middle of sustained continuation moves while
+still re-entering quickly when the trend resets.
+
+That behavior lines up with the current analyzer output. It is the strongest
+saved equity result in this folder, reaching roughly `534.04M` relative final
+value with `0.2842` log sharpe / score, while staying profitable in all
+`16/16` walk-forward folds. The gains are also fairly broad across the default
+equity basket rather than coming from only one lucky ticker, although `AMD` and
+`NVDA` appear to be the main performance accelerants.
+
+At the same time, this is exactly the kind of winner that deserves careful
+stress-testing. The optimizer repeatedly converges toward a tight parameter
+corner with very fast trend detection, a fixed `2x ATR` trailing stop, and a
+minimal re-entry wait. That does not make the result invalid, but it does make
+it a strong candidate for the evaluator red-team workflow: a strategy that may
+contain a real edge, yet could also be unusually well matched to the current
+no-fees, no-slippage research harness and therefore should be re-tested on
+alternative tickers, a final untouched holdout, and under hypothetical trading
+frictions.
+
 ### `strategyFlashEq21.py`
 
-This equity strategy is a more aggressive member of the same broad
+This equity strategy found by gemini-flash-3.1 is a more aggressive member of the same broad
 "buy pullbacks inside strong uptrends" family as `strategyFlashEq15.py`:
 
 - `SuperTrend` defines the direction regime
@@ -89,7 +126,7 @@ In practice, it waits for an uptrend, buys a dip inside that uptrend, and exits 
 
 ### `strategyMiniEq1.py`
 
-This equity strategy is a more compact trend-pullback system:
+This equity strategy found by MiniMax-M2.7 is a more compact trend-pullback system:
 
 - `ADX` confirms that the market is trending
 - `Williams %R` looks for oversold conditions
@@ -101,7 +138,7 @@ It behaves like a disciplined “buy the dip in a healthy trend” model with du
 
 ### `strategyQwenCrypto.py`
 
-This crypto strategy is slower and more patient:
+This crypto strategy found by Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL by slower and more patient:
 
 - `ADX` is used as the main trend-strength filter
 - `EMA` helps confirm the trend
